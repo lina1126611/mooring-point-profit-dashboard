@@ -89,11 +89,36 @@ def eok(value) -> str:
     `1,860,320,000원` 은 열 자리라 한눈에 안 읽힌다. 30초 안에 파악하는 것이
     목적인 자리에서는 `18.6억원` 이 훨씬 빠르다. 정확한 원 단위 금액은
     바로 아래에 작게 병기하므로 정보가 사라지지는 않는다.
+
+    1억 미만이면 억 표기가 오히려 부정확해지므로 원 단위 그대로 둔다.
     """
     n = int(round(value or 0))
     if abs(n) < EOK:
         return f"{n:,}원"
     return f"{n / EOK:.1f}억원"
+
+
+def money_row(values: list[int]) -> list[str]:
+    """한 줄에 나란히 놓을 금액들을 **같은 단위로** 맞춘다.
+
+    `5,839만원 · 6,821만원 · 8.1억원` 처럼 단위가 섞이면 어느 쪽이 큰지
+    즉시 안 읽힌다 — 나란히 놓는 이유가 크기 비교인데 그게 안 되면 의미가 없다.
+    줄 안의 최대값 기준으로 단위를 한 번만 정한다.
+    """
+    if any(abs(int(v or 0)) >= EOK for v in values):
+        return [f"{int(v or 0) / EOK:.1f}억원" for v in values]
+    return [won_kr(v) for v in values]
+
+
+def _hero_exact(value, rate) -> str:
+    """히어로 아래 보조 줄.
+
+    히어로가 억 단위로 요약됐을 때만 정확한 원 단위 금액을 병기한다.
+    1억 미만이면 히어로 자체가 이미 원 단위라 같은 숫자를 두 번 찍게 된다.
+    """
+    if abs(int(value or 0)) >= EOK:
+        return f"{won_kr(value)} · 이익률 {pct(rate)}"
+    return f"이익률 {pct(rate)}"
 
 
 def style_chart(fig: go.Figure, height: int = 340) -> go.Figure:
@@ -507,7 +532,7 @@ def _briefing_hero(summary: dict, gap: dict) -> None:
         <div class="hero">
           <div class="hero__label">{summary['기준월표기']} 기준 · 회사에 남은 돈</div>
           <div class="hero__value">{eok(summary['진짜영업이익'])}</div>
-          <div class="hero__exact">{won_kr(summary['진짜영업이익'])} · 이익률 {pct(summary['진짜이익률'])}</div>
+          <div class="hero__exact">{_hero_exact(summary['진짜영업이익'], summary['진짜이익률'])}</div>
           <div class="hero__sub">
             현장에서 <b>{eok(summary['공헌이익'])}</b> 을 벌었지만
             <b>{eok(gap['차감합계'])}</b> 이 빠져나갔습니다.<br>{cause}
@@ -526,11 +551,12 @@ def _briefing_hero(summary: dict, gap: dict) -> None:
          "임차료 · 관리직 급여 · 대출이자"),
         ("다음 달 나갈 돈", summary["다음달지출예정"], "수주가 없어도 나가는 돈"),
     ]
+    shown = money_row([v for _, v, _ in items])
     cells = "".join(
         f'<div><div class="stat__label">{label}</div>'
-        f'<div class="stat__value">{eok(value)}</div>'
+        f'<div class="stat__value">{amount}</div>'
         f'<div class="stat__note">{note}</div></div>'
-        for label, value, note in items
+        for (label, _, note), amount in zip(items, shown)
     )
     st.markdown(f'<div class="statrow">{cells}</div>', unsafe_allow_html=True)
 
@@ -829,6 +855,11 @@ def _manday_form(conn, project_id: int) -> None:
 
 
 def render_project_detail() -> None:
+    """현장 하나를 파고드는 화면.
+
+    브리핑과 같은 기준을 적용한다 — 히어로 하나, 평범한 말, 상세는 접기.
+    맨데이 입력은 설계 팀장의 일이라 대표 화면에 펼쳐 둘 이유가 없다.
+    """
     st.header("프로젝트 상세")
     conn = get_conn()
 
@@ -837,55 +868,80 @@ def render_project_detail() -> None:
         _no_data_guide()
         return
 
+    _inject_css()
     names = {r["name"]: r["id"] for r in projects}
-    picked = st.selectbox("프로젝트", list(names))
+    picked = st.selectbox("현장", list(names))
     pid = names[picked]
 
     from src import profit as profit_module
 
     p = profit_module.compute_project_profit(conn, pid)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("매출", won_kr(p.revenue))
-    c2.metric("공헌이익 (1단)", won_kr(p.contribution_margin),
-              f"이익률 {pct(p.contribution_margin_rate)}", delta_color="off")
-    c3.metric("진짜 영업이익 (2단)", won_kr(p.operating_profit),
-              f"이익률 {pct(p.operating_profit_rate)}", delta_color="off")
-    c4.metric("사라진 금액", won_kr(p.gap),
-              f"고정비 {won_kr(p.fixed_charge)} + 맨데이 {won_kr(p.manday_cost)}",
-              delta_color="off")
+    # 이 현장에서 답해야 할 것도 하나다 — 여기서 얼마 남았나.
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero__label">{picked} · 이 현장에서 남은 돈</div>
+          <div class="hero__value">{eok(p.operating_profit)}</div>
+          <div class="hero__exact">{_hero_exact(p.operating_profit, p.operating_profit_rate)}</div>
+          <div class="hero__sub">
+            매출 <b>{eok(p.revenue)}</b> 중 현장에서 <b>{eok(p.contribution_margin)}</b> 이 남았고,
+            여기에 고정비·설계 인건비 <b>{eok(p.gap)}</b> 이 더 빠졌습니다.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    items = [
+        ("설계 인건비", p.manday_cost, "이 현장에 투입된 인력"),
+        ("고정비 몫", p.fixed_charge, "회사 고정비 중 이 현장 부담분"),
+        ("변동비", p.variable_cost, "자재 · 외주 · 운반 등"),
+    ]
+    shown = money_row([v for _, v, _ in items])
+    st.markdown(
+        '<div class="statrow">'
+        + "".join(
+            f'<div><div class="stat__label">{label}</div>'
+            f'<div class="stat__value">{amount}</div>'
+            f'<div class="stat__note">{note}</div></div>'
+            for (label, _, note), amount in zip(items, shown)
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     if p.operating_profit < 0:
-        st.error("이 현장은 고정비와 맨데이를 반영하면 **적자**입니다.")
+        st.error("이 현장은 고정비와 설계 인건비를 반영하면 **적자**입니다.")
     elif p.revenue and p.operating_profit_rate < report.RISK_THRESHOLD:
         st.warning(
-            f"진짜이익률 {pct(p.operating_profit_rate)} — 경고선 "
+            f"이익률 {pct(p.operating_profit_rate)} — 경고선 "
             f"{int(report.RISK_THRESHOLD * 100)}% 아래입니다."
         )
 
     st.plotly_chart(
-        _waterfall_chart(report.profit_bridge(conn, pid), f"{picked} — 손익 폭포"),
+        _waterfall_chart(report.profit_bridge(conn, pid), f"{picked} — 매출에서 이익까지"),
         width="stretch",
     )
 
-    st.divider()
-    st.subheader("거래 내역")
+    # 아래는 파고들 때만 필요한 것들. 기본은 접어 둔다.
     accounts = report.project_accounts(conn, pid)
-    f1, f2 = st.columns(2)
-    picked_accounts = f1.multiselect("계정과목", accounts, default=[])
-    picked_behaviors = f2.multiselect("원가행태", BEHAVIOR_CHOICES, default=[])
+    with st.expander("거래 내역 보기"):
+        f1, f2 = st.columns(2)
+        picked_accounts = f1.multiselect("계정과목", accounts, default=[])
+        picked_behaviors = f2.multiselect("원가행태", BEHAVIOR_CHOICES, default=[])
+        tx = report.project_transactions(
+            conn, pid, accounts=picked_accounts or None, behaviors=picked_behaviors or None
+        )
+        st.dataframe(
+            tx, hide_index=True, width="stretch",
+            column_config={"금액": st.column_config.NumberColumn(format="%,d")},
+        )
+        st.caption(f"{len(tx)}건 · 합계 {won_kr(tx['금액'].sum() if not tx.empty else 0)}")
 
-    tx = report.project_transactions(
-        conn, pid, accounts=picked_accounts or None, behaviors=picked_behaviors or None
-    )
-    st.dataframe(
-        tx, hide_index=True, width="stretch",
-        column_config={"금액": st.column_config.NumberColumn(format="%,d")},
-    )
-    st.caption(f"{len(tx)}건 · 합계 {won_kr(tx['금액'].sum() if not tx.empty else 0)}")
-
-    st.divider()
-    _manday_form(conn, pid)
+    # 맨데이 입력은 설계 팀장의 일이다. 대표 화면에 폼을 펼쳐 두지 않는다.
+    with st.expander("설계 인력 투입 입력  ⚙"):
+        _manday_form(conn, pid)
 
 
 # ===============================================================
@@ -1124,6 +1180,12 @@ def render_settings() -> None:
 
 
 def render_report() -> None:
+    """리포트는 '열면 이미 있는 것'이어야 한다.
+
+    이전에는 버전 선택 → AI 체크 → 생성 버튼, 세 번을 조작해야 리포트가 나왔다.
+    시간을 아까워하는 사람에게 기본값으로 만들 수 있는 것을 물어보는 건 낭비다.
+    기본(대표용·코멘트 없음)을 즉시 띄우고, 다른 형식이 필요한 사람만 아래를 편다.
+    """
     st.header("경영 리포트")
     conn = get_conn()
 
@@ -1132,54 +1194,57 @@ def render_report() -> None:
         return
 
     summary = report.company_summary(conn)
-    st.caption(
-        f"기준월 **{summary['기준월표기']}** 기준으로 생성됩니다. "
-        "리포트의 모든 숫자는 브리핑 화면과 같은 계산식에서 나옵니다."
-    )
-
-    c1, c2 = st.columns([1, 1])
-    share = c1.radio(
-        "버전",
-        ["대표용 (금액 포함)", "직원 공유용 (금액 마스킹)"],
-        help="직원 공유용은 절대 금액을 가리고 비율과 증감만 남깁니다.",
-    ) == "직원 공유용 (금액 마스킹)"
-
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    use_ai = c2.checkbox(
-        "AI 경영 코멘트 추가",
-        value=has_key,
-        disabled=not has_key,
-        help=(
-            "ANTHROPIC_API_KEY 환경변수가 설정돼 있어야 합니다."
-            if not has_key
-            else f"{report.AI_MODEL} 모델이 리포트를 읽고 코멘트 3문단을 씁니다."
-        ),
-    )
-    if not has_key:
-        c2.caption("`ANTHROPIC_API_KEY` 가 없어 템플릿 리포트만 생성됩니다.")
-
-    if not st.button("리포트 생성", type="primary"):
-        return
+    share = st.session_state.get("report_share", False)
+    use_ai = st.session_state.get("report_ai", False)
 
     if use_ai:
         with st.spinner("AI 코멘트를 생성하는 중…"):
             md, has_comment = report.build_report_with_comment(conn, share=share)
         if not has_comment:
-            reason = report.last_ai_error or "원인 미상"
             st.warning(
-                f"AI 코멘트를 가져오지 못했습니다 — {reason}\n\n"
-                "아래는 템플릿 리포트입니다. 리포트 본문은 영향받지 않습니다."
+                f"AI 코멘트를 가져오지 못했습니다 — {report.last_ai_error or '원인 미상'}\n\n"
+                "아래 리포트 본문은 영향받지 않습니다."
             )
     else:
         md = report.build_report(conn, share=share)
 
     suffix = "_직원공유용" if share else ""
-    st.download_button(
+    head = st.columns([1, 2.2])
+    head[0].download_button(
         "리포트 내려받기 (.md)",
         data=md.encode("utf-8"),
         file_name=f"경영리포트_{summary['기준월표기']}{suffix}.md",
         mime="text/markdown",
+        type="primary",
+        width="stretch",
     )
+    head[1].markdown(
+        f'<div class="quiet" style="padding-top:0.6rem">'
+        f"{summary['기준월표기']} 기준"
+        + (" · <b>직원 공유용</b> (금액 가림)" if share else "")
+        + ("  · AI 코멘트 포함" if use_ai and has_comment else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("다른 형식으로 만들기"):
+        st.radio(
+            "버전",
+            [False, True],
+            format_func=lambda v: "직원 공유용 (금액 가림)" if v else "대표용 (금액 포함)",
+            key="report_share",
+            horizontal=True,
+        )
+        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        st.checkbox(
+            "AI 경영 코멘트 3문단 추가",
+            key="report_ai",
+            disabled=not has_key,
+            help=None if has_key else "이 기능을 쓰려면 API 키 설정이 필요합니다.",
+        )
+        if not has_key:
+            st.caption("AI 코멘트는 별도 설정이 필요해 현재 꺼져 있습니다. 리포트 본문에는 영향이 없습니다.")
+
     st.divider()
     st.markdown(md)
 

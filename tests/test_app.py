@@ -253,16 +253,35 @@ def test_report_page_has_version_and_ai_controls():
     assert any("AI" in c.label for c in at.checkbox)
 
 
-def test_report_page_generates_and_offers_download(monkeypatch):
-    """생성 버튼을 누르면 리포트 본문과 .md 다운로드 버튼이 나온다."""
+def test_report_is_ready_without_any_clicks(monkeypatch):
+    """리포트는 '열면 이미 있는 것'이다.
+
+    이전에는 버전 선택 → AI 체크 → 생성 버튼, 세 번을 조작해야 리포트가
+    나왔다. 시간을 아까워하는 사람에게 기본값으로 만들 수 있는 것을
+    물어보는 건 낭비다.
+    """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     at = _run("리포트")
-    at.button[0].click().run()
     assert not at.exception, at.exception
 
     assert any("현장이익과 최종이익의 차이" in m.value for m in at.markdown)
     assert len(at.download_button) == 1
     assert at.download_button[0].label.endswith("(.md)")
+
+
+def test_report_options_are_folded_away(monkeypatch):
+    """형식 선택은 접어 둔다 — 기본값이면 아무것도 고를 필요가 없다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    at = _run("리포트")
+    assert any("다른 형식" in e.label for e in at.expander), [e.label for e in at.expander]
+
+
+def test_report_default_is_full_amount_version(monkeypatch):
+    """기본은 대표용(금액 포함). 마스킹은 일부러 골라야 한다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    at = _run("리포트")
+    body = "\n".join(m.value for m in at.markdown)
+    assert "(비공개)" not in body
 
 
 def test_report_page_ai_option_disabled_without_key(monkeypatch):
@@ -300,3 +319,66 @@ def test_briefing_labels_profit_as_pre_tax():
     html = _briefing_html()
     assert "세전" in html
     assert "법인세" in html
+
+
+# ===============================================================
+# 프로젝트 상세 — 브리핑과 같은 기준을 적용했는가
+# ===============================================================
+
+
+def test_detail_leads_with_one_number():
+    """현장 화면도 히어로 하나. KPI 카드 4장을 늘어놓지 않는다."""
+    at = _run("프로젝트 상세")
+    html = "\n".join(m.value for m in at.markdown)
+    assert html.count('class="hero__value"') == 1
+    assert "이 현장에서 남은 돈" in html
+
+
+def test_detail_avoids_jargon_labels():
+    """'공헌이익 (1단)' 같은 우리끼리 쓰는 용어를 화면 라벨로 쓰지 않는다."""
+    at = _run("프로젝트 상세")
+    html = "\n".join(m.value for m in at.markdown)
+    assert "설계 인건비" in html
+    assert "공헌이익 (1단)" not in html
+    assert "진짜 영업이익 (2단)" not in html
+
+
+def test_detail_folds_away_drilldown_and_input():
+    """거래 내역과 맨데이 입력은 접어 둔다.
+
+    맨데이 입력은 설계 팀장의 일이라 대표 화면에 폼을 펼쳐 둘 이유가 없다.
+    """
+    at = _run("프로젝트 상세")
+    labels = [e.label for e in at.expander]
+    assert any("거래 내역" in l for l in labels), labels
+    manday = [l for l in labels if "설계 인력" in l]
+    assert manday, labels
+    assert manday[0].endswith("⚙"), manday   # 관리용 표식
+
+
+# ===============================================================
+# 금액 표기 — 한 줄에서 단위가 섞이면 크기 비교가 안 된다
+# ===============================================================
+
+
+def test_money_row_uses_one_unit():
+    """나란히 놓는 이유는 크기 비교다. 단위가 섞이면 그게 안 된다."""
+    import app
+
+    mixed = app.money_row([58_390_000, 68_215_995, 810_000_000])
+    assert all(v.endswith("억원") for v in mixed), mixed
+
+    small = app.money_row([58_390_000, 68_215_995])
+    assert all(v.endswith("원") and "억" not in v for v in small), small
+
+
+def test_hero_exact_line_avoids_duplicate_amount():
+    """히어로가 이미 원 단위면 같은 숫자를 아래 줄에 또 찍지 않는다."""
+    import app
+
+    big = app._hero_exact(1_860_320_000, 0.225)
+    assert "1,860,320,000원" in big and "22.5%" in big
+
+    small = app._hero_exact(47_644_005, 0.049)
+    assert "47,644,005원" not in small
+    assert small == "이익률 4.9%"
