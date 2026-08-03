@@ -14,7 +14,7 @@ from streamlit.testing.v1 import AppTest
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app.py"
 
-PAGES = ["아침 브리핑", "프로젝트 상세", "설정", "데이터"]
+PAGES = ["아침 브리핑", "프로젝트 상세", "리포트", "설정", "데이터"]
 
 
 def _run(page: str) -> AppTest:
@@ -125,3 +125,36 @@ def test_waterfall_bars_are_connected(conn):
     add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=pid)
     fig = app._waterfall_chart(report.profit_bridge(conn, pid), "테스트")
     assert len(fig.layout.shapes) == 5   # 막대 6개 사이의 연결선
+
+
+# ===============================================================
+# 리포트 페이지
+# ===============================================================
+
+
+def test_report_page_has_version_and_ai_controls():
+    """버전 선택(대표용/직원공유용)과 AI 코멘트 옵션이 있다."""
+    at = _run("리포트")
+    labels = [r.label for r in at.radio]
+    assert "버전" in labels
+    assert any("AI" in c.label for c in at.checkbox)
+
+
+def test_report_page_generates_and_offers_download(monkeypatch):
+    """생성 버튼을 누르면 리포트 본문과 .md 다운로드 버튼이 나온다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    at = _run("리포트")
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+
+    assert any("현장이익과 최종이익의 차이" in m.value for m in at.markdown)
+    assert len(at.download_button) == 1
+    assert at.download_button[0].label.endswith("(.md)")
+
+
+def test_report_page_ai_option_disabled_without_key(monkeypatch):
+    """키가 없으면 AI 코멘트 체크박스가 꺼진 채 비활성화된다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    at = _run("리포트")
+    ai = next(c for c in at.checkbox if "AI" in c.label)
+    assert ai.value is False

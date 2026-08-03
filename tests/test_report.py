@@ -384,3 +384,344 @@ def test_company_summary_surfaces_orphan_variable_cost(conn):
     s = report.company_summary(conn)
     assert s["미귀속변동비건수"] == 1
     assert s["미귀속변동비금액"] == 6_000_000
+
+
+# ===============================================================
+# 경영 리포트 — 차이 분해
+# ===============================================================
+
+
+def test_profit_gap_identity(demo):
+    """항등식: 공헌이익 − 고정비 − 이자 − 직접고정비 − 맨데이 = 진짜 영업이익.
+
+    리포트 2번 항목이 통째로 이 식이므로, 여기가 깨지면 리포트가 거짓말을 한다.
+    """
+    g = report.profit_gap(demo.conn)
+    assert (
+        g["공헌이익"] - g["고정비"] - g["이자"] - g["직접고정비"] - g["맨데이인건비"]
+        == g["진짜영업이익"]
+    )
+
+
+def test_profit_gap_matches_engine(demo):
+    """분해 항목이 손익 엔진 값과 같다."""
+    from src import profit
+
+    t = profit.company_totals(demo.conn)
+    g = report.profit_gap(demo.conn)
+    assert g["공헌이익"] == t["공헌이익"]
+    assert g["진짜영업이익"] == t["진짜영업이익"]
+    assert g["맨데이인건비"] == t["맨데이인건비"]
+    assert g["직접고정비"] == t["직접고정비"]
+    # 고정비 + 이자 = 배부고정비 (이자는 고정비 풀에 들어가 함께 배부된다)
+    assert g["고정비"] + g["이자"] == t["배부고정비"]
+
+
+def test_profit_gap_total_equals_difference(demo):
+    """차감합계 = 1단 − 2단. 이 둘이 어긋나면 어딘가 항목이 빠진 것이다."""
+    g = report.profit_gap(demo.conn)
+    assert g["차감합계"] == g["공헌이익"] - g["진짜영업이익"]
+
+
+def test_profit_gap_empty_db(conn):
+    g = report.profit_gap(conn)
+    assert g["공헌이익"] == 0 and g["진짜영업이익"] == 0 and g["차감합계"] == 0
+
+
+# ===============================================================
+# 주의 현장 + 원인 후보
+# ===============================================================
+
+
+def test_weak_projects_worst_first_and_capped(conn):
+    for name, rev, var in [("좋음", 100_000_000, 10_000_000),
+                           ("보통", 100_000_000, 70_000_000),
+                           ("나쁨", 100_000_000, 92_000_000),
+                           ("적자", 100_000_000, 120_000_000)]:
+        pid = add_project(conn, name, "2026-01-01", "2026-01-31")
+        add_tx(conn, "2026-01-10", rev, "매출", "해당없음", project_id=pid)
+        add_tx(conn, "2026-01-11", var, "매입", "변동", project_id=pid)
+
+    weak = report.weak_projects(conn, top_n=3)
+    assert [w["프로젝트"] for w in weak] == ["적자", "나쁨", "보통"]
+    assert weak[0]["적자"] is True
+
+
+def test_weak_projects_flags_high_variable_ratio(conn):
+    """변동비율이 전사 평균보다 뚜렷이 높으면 원인 후보로 잡힌다."""
+    a = add_project(conn, "변동비과다", "2026-01-01", "2026-01-31")
+    b = add_project(conn, "정상", "2026-01-01", "2026-01-31")
+    add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=a)
+    add_tx(conn, "2026-01-11", 95_000_000, "매입", "변동", project_id=a)
+    add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=b)
+    add_tx(conn, "2026-01-11", 10_000_000, "매입", "변동", project_id=b)
+
+    worst = report.weak_projects(conn)[0]
+    assert worst["프로젝트"] == "변동비과다"
+    assert any("변동비율 높음" in c for c in worst["원인후보"])
+
+
+def test_weak_projects_flags_manday_overload(conn):
+    a = add_project(conn, "맨데이과다", "2026-01-01", "2026-01-31")
+    b = add_project(conn, "정상", "2026-01-01", "2026-01-31")
+    for pid in (a, b):
+        add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=pid)
+        add_tx(conn, "2026-01-11", 30_000_000, "매입", "변동", project_id=pid)
+    add_manday(conn, a, "구조설계", 10, 20, 250_000)   # 50,000,000
+
+    worst = report.weak_projects(conn)[0]
+    assert worst["프로젝트"] == "맨데이과다"
+    assert any("맨데이 과다" in c for c in worst["원인후보"])
+
+
+def test_weak_projects_ignores_zero_revenue(conn):
+    """아직 기성 청구 전인 현장을 최악으로 올리지 않는다."""
+    add_project(conn, "착수전", "2026-01-01", "2026-12-31")
+    add_tx(conn, "2026-01-10", 1_000_000, "매입", "변동")
+    assert report.weak_projects(conn) == []
+
+
+def test_weak_projects_empty_db(conn):
+    assert report.weak_projects(conn) == []
+
+
+# ===============================================================
+# 리포트 조립
+# ===============================================================
+
+
+def test_build_report_has_all_four_sections(demo):
+    md = report.build_report(demo.conn)
+    for heading in ("## 1.", "## 2. 현장이익과 최종이익의 차이",
+                    "## 3. 주의가 필요한 현장", "## 4. 확인이 필요한 항목"):
+        assert heading in md, heading
+
+
+def test_build_report_numbers_match_dashboard(demo):
+    """[검증] 리포트에 찍힌 금액이 대시보드가 쓰는 값과 문자열 단위로 일치한다.
+
+    리포트와 대시보드가 같은 함수를 쓰는지 확인하는 것이 목적이다.
+    한쪽만 고쳐서 두 화면이 어긋나는 사고를 막는다.
+    """
+    md = report.build_report(demo.conn)
+    s = report.company_summary(demo.conn)
+    g = report.profit_gap(demo.conn)
+
+    for value in (s["공헌이익"], s["진짜영업이익"], s["이번달매출"],
+                  g["고정비"], g["이자"], g["맨데이인건비"]):
+        assert f"{value:,}원" in md, value
+
+    assert f"{s['공헌이익률'] * 100:.1f}%" in md
+    assert f"{s['진짜이익률'] * 100:.1f}%" in md
+
+
+def test_build_report_empty_db_does_not_crash(conn):
+    md = report.build_report(conn)
+    assert "경영 리포트" in md
+    assert "해당 현장이 없습니다." in md
+
+
+def test_build_report_warns_when_no_mandays(conn):
+    """맨데이가 0이면 이익이 과대표시된다는 경고가 붙는다."""
+    pid = add_project(conn, "A", "2026-01-01", "2026-01-31")
+    add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=pid)
+    assert "맨데이 인건비가 0원입니다" in report.build_report(conn)
+
+
+def test_build_report_flags_unclassified(conn):
+    pid = add_project(conn, "A", "2026-01-01", "2026-01-31")
+    add_tx(conn, "2026-01-10", 100_000_000, "매출", "해당없음", project_id=pid)
+    add_tx(conn, "2026-01-11", 5_000_000, "경비", "해당없음", account="미분류")
+    md = report.build_report(conn)
+    assert "미분류 거래 1건" in md
+    assert "5,000,000원" in md
+
+
+# ===============================================================
+# 직원 공유용 마스킹
+# ===============================================================
+
+
+def test_share_mode_masks_amounts_but_keeps_ratios(demo):
+    """금액은 가리고 비율은 남긴다.
+
+    금액을 다 지우면 현장 담당자가 자기 현장 문제를 판단할 근거까지 사라지므로
+    비율은 의도적으로 남긴다.
+    """
+    s = report.company_summary(demo.conn)
+    md = report.build_report(demo.conn, share=True)
+
+    assert report.REPORT_MASK in md
+    assert f"{s['공헌이익']:,}원" not in md
+    assert f"{s['진짜영업이익']:,}원" not in md
+    # 비율은 그대로
+    assert f"{s['공헌이익률'] * 100:.1f}%" in md
+    assert f"{s['진짜이익률'] * 100:.1f}%" in md
+
+
+def test_share_mode_leaks_no_absolute_amounts(demo):
+    """마스킹 누락 회귀 — 공유용 리포트에 '원' 단위 금액이 하나도 없어야 한다."""
+    import re
+
+    md = report.build_report(demo.conn, share=True)
+    leaked = re.findall(r"[\d,]{4,}원", md)
+    assert leaked == [], leaked
+
+
+def test_share_mode_labels_itself(demo):
+    md = report.build_report(demo.conn, share=True)
+    assert "직원 공유용" in md
+
+
+# ===============================================================
+# [2단계] AI 코멘트 — 선택 의존성
+# ===============================================================
+
+
+def test_ai_comment_returns_none_without_api_key(demo, monkeypatch):
+    """키가 없으면 조용히 None. 예외를 던지지 않는다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) is None
+
+
+def test_report_with_comment_falls_back_silently(demo, monkeypatch):
+    """키가 없어도 1단계 리포트는 온전히 나온다."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    md, has_comment = report.build_report_with_comment(demo.conn)
+    assert has_comment is False
+    assert "## 5. 경영 코멘트" not in md
+    assert md == report.build_report(demo.conn)
+
+
+def test_report_with_comment_appends_when_available(demo, monkeypatch):
+    """코멘트가 생성되면 5번 절로 붙는다. (API 호출은 대체한다)"""
+    monkeypatch.setattr(report, "ai_comment", lambda md, table: "1문단.\n\n2문단.\n\n3문단.")
+    md, has_comment = report.build_report_with_comment(demo.conn)
+    assert has_comment is True
+    assert "## 5. 경영 코멘트 (AI)" in md
+    assert "1문단." in md
+
+
+def test_ai_comment_swallows_api_errors(demo, monkeypatch):
+    """API가 실패해도 None을 돌려주고 리포트를 막지 않는다."""
+    import sys
+    import types
+
+    fake = types.ModuleType("anthropic")
+
+    class _Boom:
+        def __init__(self, **kwargs):
+            raise RuntimeError("network down")
+
+    fake.Anthropic = _Boom
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) is None
+
+
+def test_ai_comment_uses_haiku_model(demo, monkeypatch):
+    """모델 ID 회귀 — 스펙이 지정한 haiku 모델을 쓴다."""
+    import sys
+    import types
+
+    captured = {}
+    fake = types.ModuleType("anthropic")
+
+    class _Msg:
+        def __init__(self, text):
+            self.content = [types.SimpleNamespace(type="text", text=text)]
+
+    class _Client:
+        def __init__(self, **kwargs):
+            self.messages = types.SimpleNamespace(create=self._create)
+
+        def _create(self, **kwargs):
+            captured.update(kwargs)
+            return _Msg("코멘트")
+
+    fake.Anthropic = _Client
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) == "코멘트"
+    assert captured["model"] == "claude-haiku-4-5"
+    # haiku 4.5 는 effort 파라미터를 지원하지 않는다 — 보내면 에러가 난다.
+    assert "output_config" not in captured
+
+
+def test_share_mode_mask_does_not_break_markdown(demo):
+    """마스크가 마크다운 강조 기호와 충돌하지 않는다.
+
+    별표 마스크를 쓰면 `**금액**` 이 `*****` 가 되어 볼드가 깨진다.
+    (실제로 그렇게 깨졌던 자리)
+    """
+    md = report.build_report(demo.conn, share=True)
+    assert "*" not in report.REPORT_MASK
+    assert "****" not in md
+
+
+def test_ai_error_reason_is_recorded_for_missing_package(demo, monkeypatch):
+    """SDK 가 없으면 이유가 남아 나중에 원인을 알 수 있다."""
+    import builtins
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    real_import = builtins.__import__
+
+    def _no_anthropic(name, *args, **kwargs):
+        if name == "anthropic":
+            raise ImportError("no module named anthropic")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_anthropic)
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) is None
+    assert "pip install anthropic" in report.last_ai_error
+
+
+def test_ai_error_reason_is_recorded_for_bad_response_shape(demo, monkeypatch):
+    """응답 구조가 예상과 다르면 '응답 파싱 실패' 로 남는다.
+
+    이 경로는 실제 API 로 검증된 적이 없어서, 깨졌을 때 단서가 필요하다.
+    """
+    import sys
+    import types
+
+    fake = types.ModuleType("anthropic")
+
+    class _Client:
+        def __init__(self, **kwargs):
+            # content 가 리스트가 아닌 응답 — 파싱이 깨지는 형태
+            self.messages = types.SimpleNamespace(
+                create=lambda **kw: types.SimpleNamespace(content=None)
+            )
+
+    fake.Anthropic = _Client
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) is None
+    assert "응답 파싱 실패" in report.last_ai_error
+
+
+def test_ai_error_cleared_on_success(demo, monkeypatch):
+    """성공하면 이전 실패 사유가 남아 있지 않다."""
+    import sys
+    import types
+
+    fake = types.ModuleType("anthropic")
+
+    class _Client:
+        def __init__(self, **kwargs):
+            self.messages = types.SimpleNamespace(
+                create=lambda **kw: types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text="코멘트")]
+                )
+            )
+
+    fake.Anthropic = _Client
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    report.last_ai_error = "이전 실패"
+    assert report.ai_comment("리포트", report.profit_table(demo.conn)) == "코멘트"
+    assert report.last_ai_error is None

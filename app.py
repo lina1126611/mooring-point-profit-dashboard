@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -988,9 +989,76 @@ def render_settings() -> None:
         _settings_daily_rates(conn)
 
 
+# ===============================================================
+# 페이지 5 — 리포트
+# ===============================================================
+
+
+def render_report() -> None:
+    st.header("경영 리포트")
+    conn = get_conn()
+
+    if conn.execute("SELECT COUNT(*) AS n FROM transactions").fetchone()["n"] == 0:
+        _no_data_guide()
+        return
+
+    summary = report.company_summary(conn)
+    st.caption(
+        f"기준월 **{summary['기준월표기']}** 기준으로 생성됩니다. "
+        "리포트의 모든 숫자는 브리핑 화면과 같은 계산식에서 나옵니다."
+    )
+
+    c1, c2 = st.columns([1, 1])
+    share = c1.radio(
+        "버전",
+        ["대표용 (금액 포함)", "직원 공유용 (금액 마스킹)"],
+        help="직원 공유용은 절대 금액을 가리고 비율과 증감만 남깁니다.",
+    ) == "직원 공유용 (금액 마스킹)"
+
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    use_ai = c2.checkbox(
+        "AI 경영 코멘트 추가",
+        value=has_key,
+        disabled=not has_key,
+        help=(
+            "ANTHROPIC_API_KEY 환경변수가 설정돼 있어야 합니다."
+            if not has_key
+            else f"{report.AI_MODEL} 모델이 리포트를 읽고 코멘트 3문단을 씁니다."
+        ),
+    )
+    if not has_key:
+        c2.caption("`ANTHROPIC_API_KEY` 가 없어 템플릿 리포트만 생성됩니다.")
+
+    if not st.button("리포트 생성", type="primary"):
+        return
+
+    if use_ai:
+        with st.spinner("AI 코멘트를 생성하는 중…"):
+            md, has_comment = report.build_report_with_comment(conn, share=share)
+        if not has_comment:
+            reason = report.last_ai_error or "원인 미상"
+            st.warning(
+                f"AI 코멘트를 가져오지 못했습니다 — {reason}\n\n"
+                "아래는 템플릿 리포트입니다. 리포트 본문은 영향받지 않습니다."
+            )
+    else:
+        md = report.build_report(conn, share=share)
+
+    suffix = "_직원공유용" if share else ""
+    st.download_button(
+        "리포트 내려받기 (.md)",
+        data=md.encode("utf-8"),
+        file_name=f"경영리포트_{summary['기준월표기']}{suffix}.md",
+        mime="text/markdown",
+    )
+    st.divider()
+    st.markdown(md)
+
+
 PAGES = {
     "아침 브리핑": render_briefing,
     "프로젝트 상세": render_project_detail,
+    "리포트": render_report,
     "설정": render_settings,
     "데이터": render_data,
 }
@@ -1002,6 +1070,7 @@ def main() -> None:
     st.sidebar.caption(
         "**아침 브리핑** — 오늘 상황 30초 요약\n\n"
         "**프로젝트 상세** — 현장별 폭포차트·거래·맨데이\n\n"
+        "**리포트** — 경영 리포트 생성·다운로드\n\n"
         "**설정** — 차입금·고정비·배부기준\n\n"
         "**데이터** — 엑셀 업로드·분류 수정"
     )
