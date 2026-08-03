@@ -1,0 +1,19 @@
+# 테마를 밝게 고정한다.
+#
+# 이 앱은 이미 밝은 배경을 전제로 만들어져 있다 — 차트가 plot_bgcolor="white" 를
+# 쓰고, 브리핑의 히어로 숫자와 본문이 짙은 잉크색이다. OS 가 다크 모드면
+# Streamlit 이 따라가면서 배경만 어두워져, 검은 글씨가 안 보이고 차트만 흰 상자로
+# 떠 버린다. 대표가 아침에 여는 화면이 OS 설정에 따라 달라지면 안 되므로 고정한다.
+[theme]
+base = "light"
+primaryColor = "#17527D"          # 2단 진짜 영업이익에 쓰는 진한 파랑
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7F9"
+textColor = "#1F2933"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

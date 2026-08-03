@@ -50,21 +50,72 @@ def test_data_page_shows_edit_filter():
 # ===============================================================
 
 
-def test_briefing_shows_four_kpi_cards():
+def _briefing_html() -> str:
+    """브리핑 화면의 마크다운/HTML 을 한 덩어리로."""
     at = _run("아침 브리핑")
-    labels = [m.label for m in at.metric]
-    assert any("매출" in l for l in labels)
-    assert any("공헌이익" in l for l in labels)
-    assert any("진짜 영업이익" in l for l in labels)
-    assert any("지출" in l for l in labels)
+    return "\n".join(m.value for m in at.markdown)
+
+
+def test_briefing_leads_with_operating_profit():
+    """화면이 이끄는 숫자는 '진짜 영업이익' 하나다.
+
+    KPI 카드 4장을 같은 크기로 늘어놓으면 무엇부터 봐야 하는지가 화면에
+    표현되지 않는다. 히어로 1개 + 보조 수치 구조를 고정한다.
+    """
+    html = _briefing_html()
+    # CSS 정의에도 같은 이름이 나오므로 실제 렌더된 요소만 센다
+    assert html.count('class="hero__value"') == 1, "히어로 숫자는 화면당 하나"
+    assert "진짜 영업이익" in html
+
+
+def test_briefing_shows_gap_components():
+    """왜 안 남았는지 — 고정비·이자·맨데이가 보조 수치로 함께 있다."""
+    html = _briefing_html()
+    for label in ("고정비 배부", "이자비용", "맨데이 인건비", "다음 달 나갈 돈"):
+        assert label in html, label
 
 
 def test_briefing_amounts_use_comma_and_won():
     """금액은 천 단위 콤마 + '원' 표기."""
+    import re
+
+    html = _briefing_html()
+    amounts = re.findall(r"[\d,]+원", html)
+    assert amounts, "금액이 하나도 없다"
+    assert any("," in a for a in amounts), amounts
+
+
+def test_briefing_hides_detail_behind_expanders():
+    """9칼럼 표와 3개월 지출표는 접혀 있다 — 30초 화면의 방해 요소."""
     at = _run("아침 브리핑")
-    values = [m.value for m in at.metric]
-    assert all(v.endswith("원") for v in values), values
-    assert any("," in v for v in values)
+    labels = [e.label for e in at.expander]
+    assert any("현장별 상세" in l for l in labels), labels
+    assert any("향후 3개월" in l for l in labels), labels
+
+
+def test_briefing_defers_data_quality_to_data_page():
+    """미분류·미귀속 경고는 브리핑에서 노란 박스로 띄우지 않는다.
+
+    둘 다 데이터를 고쳐야 풀리는 문제라 조치할 수 있는 화면에 있어야 하고,
+    브리핑에 두면 정작 봐야 할 손익 경고와 경쟁한다.
+    """
+    at = _run("아침 브리핑")
+    assert not at.warning, [w.value for w in at.warning]
+
+
+def test_data_page_carries_quality_warnings():
+    """옮긴 경고가 데이터 페이지에 실제로 있다 (샘플 DB에 미귀속 변동비가 있음)."""
+    from src import db as db_module
+    from src import report as report_module
+
+    conn = db_module.open_app_db()
+    summary = report_module.company_summary(conn)
+    if not (summary["미분류건수"] or summary["미귀속변동비건수"]):
+        pytest.skip("현재 DB에 데이터 품질 문제가 없다")
+
+    at = _run("데이터")
+    joined = "\n".join(w.value for w in at.warning)
+    assert "미분류" in joined or "미귀속" in joined, joined
 
 
 def test_briefing_has_comparison_chart():
@@ -158,3 +209,36 @@ def test_report_page_ai_option_disabled_without_key(monkeypatch):
     at = _run("리포트")
     ai = next(c for c in at.checkbox if "AI" in c.label)
     assert ai.value is False
+
+
+def test_briefing_orders_deductions_by_size():
+    """차감 항목은 금액 큰 순으로 놓인다.
+
+    읽는 순서가 중요도와 어긋나면 히어로 아래 수치가 눈에 안 들어온다.
+    (맨데이가 최대 누수인데 네 번째에 있던 것을 고친 자리)
+    """
+    from src import db as db_module
+    from src import report as report_module
+
+    conn = db_module.open_app_db()
+    gap = report_module.profit_gap(conn)
+    if not gap["차감합계"]:
+        pytest.skip("차감 항목이 없다")
+
+    html = _briefing_html()
+    labels = {
+        "맨데이 인건비": gap["맨데이인건비"],
+        "고정비 배부": gap["고정비"],
+        "이자비용": gap["이자"],
+    }
+    present = {k: v for k, v in labels.items() if k in html}
+    positions = sorted(present, key=lambda k: html.index(k))
+    amounts = [present[k] for k in positions]
+    assert amounts == sorted(amounts, reverse=True), list(zip(positions, amounts))
+
+
+def test_briefing_labels_profit_as_pre_tax():
+    """히어로 숫자가 세전임을 화면에 적는다 — 법인세는 이듬해 나간다."""
+    html = _briefing_html()
+    assert "세전" in html
+    assert "법인세" in html

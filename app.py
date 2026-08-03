@@ -374,9 +374,37 @@ def _maintenance_section(conn) -> None:
             st.success(f"맨데이 {n}건 적재했습니다.")
 
 
+def _quality_warnings(conn) -> None:
+    """원가에서 조용히 빠지는 금액을 알린다.
+
+    브리핑이 아니라 여기 두는 이유: 둘 다 '데이터를 고쳐야 해결되는' 문제라
+    조치할 수 있는 화면에 있어야 한다. 브리핑에 노란 경고를 띄우면 정작 봐야 할
+    손익 경고와 경쟁하고, 대표가 할 수 있는 일도 없다.
+    """
+    summary = report.company_summary(conn)
+
+    if summary["미분류건수"]:
+        st.warning(
+            f"**미분류 {summary['미분류건수']}건 · {won_kr(summary['미분류금액'])}** "
+            f"(전체의 {summary['미분류비율']:.1f}%) — 변동비에도 고정비에도 들어가 있지 "
+            "않습니다. 분류하면 진짜 영업이익은 그만큼 더 줄어듭니다. "
+            "아래 **분류 수정**에서 `미분류만` 필터로 처리하세요."
+        )
+
+    if summary["미귀속변동비건수"]:
+        st.warning(
+            f"**현장 미귀속 변동비 {summary['미귀속변동비건수']}건 · "
+            f"{won_kr(summary['미귀속변동비금액'])}** — 변동으로 분류됐지만 현장이 "
+            "비어 있습니다. 변동비 합계는 현장별로 묶이므로 이 금액은 어느 현장 "
+            "원가에도 안 잡힙니다 (미분류와 결과가 같습니다). "
+            "아래 `현장 미귀속 변동비` 필터에서 현장을 채우거나 고정으로 다시 판단하세요."
+        )
+
+
 def render_data() -> None:
     st.header("데이터")
     conn = get_conn()
+    _quality_warnings(conn)
     _upload_section(conn)
     st.divider()
     _status_section(conn)
@@ -399,31 +427,95 @@ def _no_data_guide() -> None:
     )
 
 
-def _briefing_kpis(summary: dict) -> None:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(
-        f"{summary['기준월표기']} 매출",
-        won_kr(summary["이번달매출"]),
-        f"전월 {won_kr(summary['전월매출'])}",
-        delta_color="off",
+def _inject_css() -> None:
+    """브리핑 화면 전용 서식.
+
+    목적이 '아침에 30초 안에 파악'이므로, 읽는 순서가 크기로 정해지게 한다.
+    히어로 숫자 하나 → 보조 수치 → 근거. 테두리와 색은 최소로 둔다.
+    """
+    st.markdown(
+        f"""
+        <style>
+        .hero {{ margin: 0.5rem 0 0.25rem; }}
+        .hero__label {{
+            font-size: 0.95rem; color: {C_GRAY_D}; margin-bottom: 0.35rem;
+        }}
+        .hero__value {{
+            /* 화면이 이끄는 단 하나의 숫자. 폭 정렬(tabular)은 표에서만 쓴다 */
+            font-size: 3.4rem; font-weight: 700; line-height: 1.1;
+            color: {C_BLUE_D}; letter-spacing: -0.02em;
+        }}
+        .hero__sub {{
+            font-size: 1.05rem; color: {C_INK}; margin-top: 0.6rem; line-height: 1.6;
+        }}
+        .statrow {{ display: flex; gap: 2.75rem; flex-wrap: wrap; margin: 1.1rem 0 0.25rem; }}
+        .stat__label {{ font-size: 0.85rem; color: {C_GRAY_D}; margin-bottom: 0.2rem; }}
+        .stat__value {{ font-size: 1.45rem; font-weight: 600; color: {C_INK}; }}
+        .stat__note  {{ font-size: 0.8rem; color: {C_GRAY_D}; margin-top: 0.15rem; }}
+        .quiet {{ font-size: 0.85rem; color: {C_GRAY_D}; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    c2.metric(
-        "전사 공헌이익 (1단)",
-        won_kr(summary["공헌이익"]),
-        f"이익률 {pct(summary['공헌이익률'])}",
-        delta_color="off",
+
+
+def _briefing_hero(summary: dict, gap: dict) -> None:
+    """히어로 = 진짜 영업이익 하나. 나머지는 그 숫자를 설명하는 재료다.
+
+    이전에는 KPI 카드 4장이 같은 크기로 놓여 있어서 무엇부터 봐야 하는지가
+    화면에 표현되지 않았다. 대표가 알아야 할 것은 '회사에 얼마 남나' 하나이므로
+    그것만 크게 두고, 매출·차이·다음달지출은 보조로 내린다.
+    """
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="hero__label">{summary['기준월표기']} 기준 · 진짜 영업이익 <b>(세전)</b></div>
+          <div class="hero__value">{won_kr(summary['진짜영업이익'])}</div>
+          <div class="hero__sub">
+            현장이 벌어온 <b>{won_kr(summary['공헌이익'])}</b> 에서
+            <b>{won_kr(gap['차감합계'])}</b> 이 빠져나갔습니다.
+            이익률 {pct(summary['공헌이익률'])} → <b>{pct(summary['진짜이익률'])}</b>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    c3.metric(
-        "진짜 영업이익 (2단)",
-        won_kr(summary["진짜영업이익"]),
-        f"이익률 {pct(summary['진짜이익률'])}",
-        delta_color="off",
+
+    # 차감 항목은 금액 큰 순으로. 읽는 순서와 중요도가 어긋나면 안 된다
+    # (맨데이가 최대 누수인데 네 번째에 있으면 눈에 안 들어온다).
+    deductions = [
+        ("맨데이 인건비", gap["맨데이인건비"], "ERP에 안 잡히던 원가"),
+        ("고정비 배부", gap["고정비"], None),
+        ("이자비용", gap["이자"], None),
+    ]
+    if gap["직접고정비"]:
+        deductions.append(("현장 직접 고정비", gap["직접고정비"], None))
+    deductions.sort(key=lambda x: x[1], reverse=True)
+
+    items = deductions + [
+        (f"{summary['기준월표기']} 매출", summary["이번달매출"],
+         f"전월 {won_kr(summary['전월매출'])}"),
+        ("다음 달 나갈 돈", summary["다음달지출예정"], "고정비 + 이자"),
+    ]
+
+    cells = "".join(
+        f'<div><div class="stat__label">{label}</div>'
+        f'<div class="stat__value">{won_kr(value)}</div>'
+        + (f'<div class="stat__note">{note}</div>' if note else "")
+        + "</div>"
+        for label, value, note in items
     )
-    c4.metric(
-        f"{summary['기준월표기']} 고정비·이자 지출",
-        won_kr(summary["이번달지출예정"]),
-        f"다음 달 {won_kr(summary['다음달지출예정'])}",
-        delta_color="off",
+    st.markdown(f'<div class="statrow">{cells}</div>', unsafe_allow_html=True)
+
+    # 이 숫자가 무엇을 빼고 무엇을 안 뺐는지 화면에 적어 둔다.
+    # 회계 기준으로 '영업이익'은 이자비용을 빼지 않으므로(이자는 영업외비용),
+    # 이자를 뺀 이 값은 영업이익보다 세전이익에 가깝다. 그리고 법인세는
+    # 발생은 당기지만 납부가 이듬해라, 이 금액이 곧 쓸 수 있는 돈도 아니다.
+    st.markdown(
+        '<div class="quiet">이자비용을 뺀 <b>세전</b> 금액입니다. '
+        "법인세는 포함돼 있지 않고, 발생은 올해지만 납부는 이듬해입니다 — "
+        "쓸 수 있는 현금과는 다릅니다.</div>",
+        unsafe_allow_html=True,
     )
 
 
@@ -448,40 +540,63 @@ def _briefing_alerts(conn) -> None:
 
 
 def _margin_comparison_chart(table: pd.DataFrame) -> go.Figure:
-    """공헌이익률 vs 진짜이익률 — 두 막대 사이의 빈틈이 곧 새는 돈이다."""
-    df = table.sort_values("진짜이익률")
+    """현장별 공헌이익률 → 진짜이익률 낙폭 (덤벨).
+
+    막대 2개를 나란히 세우면 현장 6곳에 막대 12개가 서고, 정작 요점인 '낙폭'은
+    두 막대 사이의 빈 공간이라 눈에 안 잡힌다. 덤벨은 그 낙폭을 선 하나로
+    직접 그리므로 잉크가 줄면서 메시지는 더 선명해진다.
+    가로 배치라 현장명이 기울지 않고 그대로 읽힌다.
+    """
+    df = table.sort_values("진짜이익률", ascending=True)
     names = [n if len(n) <= 16 else n[:15] + "…" for n in df["프로젝트"]]
     cm = (df["공헌이익률"] * 100).round(1)
     op = (df["진짜이익률"] * 100).round(1)
 
     fig = go.Figure()
-    fig.add_bar(
-        name="1단 공헌이익률", x=names, y=cm, marker_color=C_BLUE,
-        text=[f"{v:.1f}%" for v in cm], textposition="outside", textfont_size=11,
-        customdata=df[["프로젝트"]].values,
-        hovertemplate="<b>%{customdata[0]}</b><br>공헌이익률 %{y:.1f}%<extra></extra>",
-    )
-    fig.add_bar(
-        name="2단 진짜이익률", x=names, y=op, marker_color=C_BLUE_D,
-        text=[f"{v:.1f}%" for v in op], textposition="outside", textfont_size=11,
-        customdata=df[["프로젝트"]].values,
-        hovertemplate="<b>%{customdata[0]}</b><br>진짜이익률 %{y:.1f}%<extra></extra>",
-    )
-    # 빠져나간 폭을 숫자로 못박는다 — 두 막대 사이가 '새는 돈'이라는 뜻
-    for i, (c, o) in enumerate(zip(cm, op)):
-        fig.add_annotation(
-            x=i, y=max(c, o) + 5.5, text=f"−{c - o:.1f}%p",
-            showarrow=False, font=dict(size=11, color=C_RED),
+
+    # ① 낙폭 = 두 점을 잇는 선. 이 길이가 '새는 돈'이다.
+    for y, (c, o) in enumerate(zip(cm, op)):
+        fig.add_shape(
+            type="line", x0=o, x1=c, y0=y, y1=y,
+            line=dict(color=C_GRAY, width=3),
         )
-    fig.add_hline(
-        y=report.RISK_THRESHOLD * 100, line_dash="dot", line_color=C_RED, line_width=1,
-        annotation_text=f"경고선 {int(report.RISK_THRESHOLD * 100)}%",
-        annotation_position="top left", annotation_font_color=C_RED, annotation_font_size=11,
+
+    # ② 1단(옅은 파랑) → ③ 2단(진한 파랑). 같은 색 두 단계 = 같은 지표의 전후.
+    fig.add_scatter(
+        x=cm, y=names, mode="markers", name="1단 공헌이익률",
+        marker=dict(size=13, color=C_BLUE, line=dict(color="white", width=2)),
+        hovertemplate="<b>%{y}</b><br>공헌이익률 %{x:.1f}%<extra></extra>",
     )
-    fig.update_layout(barmode="group", title="현장별 공헌이익률 vs 진짜이익률")
-    fig.update_yaxes(range=[min(0, op.min() - 8), cm.max() + 14], ticksuffix="%")
-    fig.update_xaxes(tickangle=-18)
-    return style_chart(fig, 400)
+    fig.add_scatter(
+        x=op, y=names, mode="markers", name="2단 진짜이익률",
+        marker=dict(size=13, color=C_BLUE_D, line=dict(color="white", width=2)),
+        hovertemplate="<b>%{y}</b><br>진짜이익률 %{x:.1f}%<extra></extra>",
+    )
+
+    # 낙폭 수치는 선 오른쪽 끝 바깥에 한 번만 적는다 (점마다 숫자를 붙이지 않는다)
+    for y, (c, o) in enumerate(zip(cm, op)):
+        fig.add_annotation(
+            x=c, y=y, text=f"−{c - o:.1f}%p", showarrow=False,
+            xanchor="left", xshift=12, font=dict(size=11, color=C_GRAY_D),
+        )
+
+    fig.add_vline(
+        x=report.RISK_THRESHOLD * 100, line_dash="dot", line_color=C_RED, line_width=1,
+        annotation_text=f"경고선 {int(report.RISK_THRESHOLD * 100)}%",
+        annotation_position="bottom right",
+        annotation_font_color=C_RED, annotation_font_size=11,
+    )
+    fig.update_layout(title="현장별 이익률 낙폭 — 선 길이가 빠져나간 폭")
+    fig.update_xaxes(range=[min(0, op.min() - 6), cm.max() + 16], ticksuffix="%")
+    fig.update_yaxes(showgrid=False)
+
+    row_h, top, bottom = 46, 78, 54
+    fig = style_chart(fig, top + bottom + row_h * len(names))
+    # 공통 여백은 세로 막대 기준(현장명이 x축에 기울어 들어감)이라 가로 차트에는
+    # 안 맞는다. 현장명이 y축 라벨로 들어가므로 왼쪽을 넓히고, 기운 라벨이
+    # 없으니 아래는 줄인다.
+    fig.update_layout(margin=dict(l=185, r=44, t=top, b=bottom))
+    return fig
 
 
 def render_briefing() -> None:
@@ -492,29 +607,20 @@ def render_briefing() -> None:
         _no_data_guide()
         return
 
+    _inject_css()
     summary = report.company_summary(conn)
-    st.caption(
-        f"기준월 **{summary['기준월표기']}** · 분석기간 {summary['개월수']}개월 · "
-        f"프로젝트 {summary['프로젝트수']}건 · 배부기준 "
-        f"{finance.BASIS_LABELS.get(db_module.get_setting(conn, 'allocation_basis', finance.DEFAULT_BASIS), '—')}"
-    )
+    gap = report.profit_gap(conn)
 
-    _briefing_kpis(summary)
+    _briefing_hero(summary, gap)
     st.divider()
     _briefing_alerts(conn)
 
     table = report.profit_table(conn)
     st.plotly_chart(_margin_comparison_chart(table), width="stretch")
-    st.caption(
-        f"두 막대의 차이가 배부 고정비 {won_kr(summary['배부고정비'] + summary['직접고정비'])} 와 "
-        f"맨데이 인건비 {won_kr(summary['맨데이인건비'])} 다. "
-        f"전사로는 {pct(summary['공헌이익률'])} → {pct(summary['진짜이익률'])} "
-        f"({won_kr(summary['차이'])} 감소)."
-    )
 
-    left, right = st.columns([1.35, 1])
-    with left:
-        st.subheader("현장별 2단 손익")
+    # 근거 자료는 접어 둔다. 30초 화면에서 9칼럼 표는 방해가 되고,
+    # 필요한 사람은 한 번만 누르면 되므로 정보를 지우는 것이 아니다.
+    with st.expander("현장별 상세 (매출 · 변동비 · 고정비 · 맨데이)"):
         st.dataframe(
             table.assign(
                 공헌이익률=lambda d: d["공헌이익률"].map(pct),
@@ -527,10 +633,10 @@ def render_briefing() -> None:
                 for col in ("매출", "변동비", "공헌이익", "배부고정비", "맨데이", "진짜영업이익")
             },
         )
-    with right:
-        st.subheader("향후 3개월 지출 예정")
+
+    upcoming = report.upcoming_fixed_costs(conn, months=3)
+    with st.expander(f"향후 3개월 지출 예정 — 합계 {won_kr(upcoming['합계'].sum())}"):
         st.caption("수주가 없어도 나가는 돈 (고정비 + 차입금 이자)")
-        upcoming = report.upcoming_fixed_costs(conn, months=3)
         st.dataframe(
             upcoming,
             hide_index=True,
@@ -540,23 +646,20 @@ def render_briefing() -> None:
                 for c in ("고정비", "이자", "합계")
             },
         )
-        st.metric("3개월 합계", won_kr(upcoming["합계"].sum()))
-        st.metric("BEP 손익분기 매출", won_kr(summary["BEP매출"]))
+        st.caption(f"BEP 손익분기 매출 {won_kr(summary['BEP매출'])}")
 
+    # 데이터 품질 문제는 '데이터' 페이지에서 조치한다. 브리핑에 노란 경고를
+    # 두 개 띄우면 정작 봐야 할 손익 경고와 경쟁한다. 여기서는 한 줄로만 알린다.
+    issues = []
     if summary["미분류건수"]:
-        st.warning(
-            f"미분류 {summary['미분류건수']}건 · {won_kr(summary['미분류금액'])} "
-            f"({summary['미분류비율']:.1f}%) 은 변동비에도 고정비에도 들어가 있지 않습니다. "
-            "분류하면 진짜 영업이익은 그만큼 더 줄어듭니다. — **데이터** 페이지에서 처리하세요."
-        )
-
+        issues.append(f"미분류 {summary['미분류건수']}건")
     if summary["미귀속변동비건수"]:
-        st.warning(
-            f"변동비로 분류됐지만 현장이 비어 있는 거래가 "
-            f"{summary['미귀속변동비건수']}건 · {won_kr(summary['미귀속변동비금액'])} 있습니다. "
-            "변동비 합계는 현장별로 묶이므로 이 금액은 어느 현장 원가에도 안 잡힙니다 "
-            "(미분류와 결과가 같습니다). — **데이터** 페이지에서 현장을 채우거나 "
-            "고정으로 다시 판단하세요."
+        issues.append(f"현장 미귀속 변동비 {summary['미귀속변동비건수']}건")
+    if issues:
+        st.markdown(
+            f'<div class="quiet">확인 필요 · {" · ".join(issues)} '
+            "— 왼쪽 <b>데이터</b> 페이지에서 처리하세요</div>",
+            unsafe_allow_html=True,
         )
 
 

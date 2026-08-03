@@ -725,3 +725,19 @@ def test_ai_error_cleared_on_success(demo, monkeypatch):
     report.last_ai_error = "이전 실패"
     assert report.ai_comment("리포트", report.profit_table(demo.conn)) == "코멘트"
     assert report.last_ai_error is None
+
+
+def test_report_labels_profit_as_pre_tax(demo):
+    """2단 이익은 '세전'임을 리포트에 명시한다.
+
+    이자를 고정비 풀에 넣어 배부하므로 회계상 영업이익이 아니라 세전이익에
+    가깝고, 법인세는 발생과 납부 시점이 달라 곧 쓸 수 있는 현금도 아니다.
+    """
+    md = report.build_report(demo.conn)
+    assert "세전" in md
+    assert "법인세" in md
+
+
+def test_share_report_also_labels_pre_tax(demo):
+    """직원 공유용에서도 세전 표기는 남는다 (금액만 가린다)."""
+    assert "세전" in report.build_report(demo.conn, share=True)
