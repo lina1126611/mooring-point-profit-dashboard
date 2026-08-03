@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 실데이터·DB는 저장소에 넣지 않는다
+db/*.db
+data/raw/*
+!data/raw/.gitkeep
+
+# 검산 리포트는 생성물 (scripts/verify_by_hand.py)
+reports/
+
+.streamlit/secrets.toml

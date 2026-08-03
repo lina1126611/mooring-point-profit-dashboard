@@ -1,0 +1,168 @@
+# Mooring Point 경영지원 대시보드
+
+프로젝트 수주형 엔지니어링 기업을 위한 경영지원 대시보드.
+Python + Streamlit + SQLite.
+
+> **학습·포트폴리오용 공개 저장소입니다.**
+> 특정 기업의 실제 회계 데이터는 포함하지 않습니다. 저장소에 들어 있는 모든
+> 금액·거래처·현장명은 `scripts/generate_sample_data.py` 가 생성한 가상값이며,
+> 실데이터 경로(`data/raw/`, `db/*.db`)는 `.gitignore` 로 제외됩니다.
+
+## 왜 만드는가 (문제 정의)
+
+수주형 엔지니어링 기업의 원가 회계에서 흔히 반복되는 두 가지 공백을 다룬다.
+
+- **일반적인 ERP는 고정비/변동비를 구분해 주지 않는다.** 그래서
+  *"현장에서 돈이 남았는데 최종적으로 왜 안 남았는지"* 를 설명할 수 없다.
+  이것이 이 프로젝트가 푸는 핵심 문제다.
+- **설계 인력의 맨데이(투입 인건비)가 원가에 안 잡히는 경우가 많다.** 그 결과
+  프로젝트 이익률이 실제보다 과대표시된다.
+- 즉, 현장 단위 이익은 보이는데 회사 전체 이익과의 간극이 설명되지 않는다.
+  이 간극 = 배부되지 않은 고정비 + 계상되지 않은 맨데이 인건비.
+
+## 핵심 설계: 2단 손익 구조
+
+이 시스템의 모든 화면과 계산은 아래 2단 구조를 중심으로 정렬된다.
+
+```
+[1단] 공헌이익 (현장이익)
+      = 프로젝트 매출 − 변동비
+
+[2단] 진짜 영업이익
+      = 공헌이익 − 배부된 고정비 − 맨데이 인건비
+```
+
+- **1단**은 현장이 벌어온 돈. 대표가 지금 보고 있는 숫자.
+- **2단**은 회사에 실제로 남는 돈. 지금 안 보이는 숫자.
+- 대시보드는 두 숫자를 **나란히** 보여주고, 그 **차이를 항목별로 분해**해서
+  "왜 안 남았는지"를 답해야 한다. (고정비 배부액 / 맨데이 인건비 / 이자비용)
+
+## 아키텍처 원칙
+
+- **실시간 처리 불필요.** 엑셀 업로드 → 분석 → 대시보드 조회 방식(배치).
+- 데이터 흐름: `엑셀(data/raw)` → `ingest` → `classify` → `SQLite(db)`
+  → `profit` / `finance` → `report` → `Streamlit UI`
+- 계산 로직은 전부 `src/` 안에 두고, `app.py`는 얇게 유지한다.
+  (UI 코드에 금액 계산식을 넣지 않는다 — 테스트가 불가능해지므로)
+
+## 프로젝트 구조
+
+```
+app.py              Streamlit 진입점 (얇은 UI 레이어)
+src/
+  db.py             SQLite 연결 + 스키마 초기화
+  rules.py          분류 규칙 (컬럼 별칭 / 계정 키워드 / 원가행태 매핑)
+  ingest.py         엑셀 로딩·정규화·DB 적재
+  classify.py       계정과목 → 원가행태(변동/고정/해당없음) 분류
+  profit.py         2단 손익 엔진 (공헌이익 / 진짜 영업이익)
+  finance.py        이자비용, 고정비 배부
+  report.py         리포트 조립 (요약표, 차트용 데이터)
+scripts/
+  generate_sample_data.py   샘플 ERP 엑셀 생성
+  load_sample_data.py       샘플 적재 + 통합 품질 점검
+  resolve_unclassified.py   합의된 미분류 판단 재적용 (재적재 후 실행)
+db/
+  schema.sql        SQLite 스키마
+  *.db              SQLite 파일 (git 미포함)
+data/raw/           원본 엑셀 (git 미포함)
+data/sample/        샘플/테스트용 엑셀
+tests/              pytest
+```
+
+## 데이터 스키마 (db/schema.sql)
+
+| 테이블 | 컬럼 | 비고 |
+|---|---|---|
+| `projects` | id, name, client, start_date, end_date, contract_amount | 수주 프로젝트 마스터 |
+| `transactions` | id, date, project_id, vendor, description, account, tx_type, amount, **amount_incl_vat**, cost_behavior, source_file, is_manual_override, **is_duplicate_suspect** | 거래 원장 |
+| `loans` | id, name, principal, annual_rate, start_date, end_date | 차입금 (이자비용) |
+| `fixed_costs` | id, name, monthly_amount, category | 월 고정비 (임차료, 보험 등) |
+| `mandays` | id, project_id, role, headcount, days, daily_rate | 설계 인력 투입 |
+| `settings` | key, value | 고정비 배부기준 등 |
+
+주요 제약:
+
+- `transactions.tx_type` ∈ `매입` / `경비` / `매출`
+- `transactions.cost_behavior` ∈ `변동` / `고정` / `해당없음`
+  (매출 행과 미분류 행은 `해당없음`)
+- `transactions.amount` = **공급가액**. 손익 계산은 항상 이 값을 쓴다.
+  부가세는 매입세액공제로 환급되므로 원가도 매출도 아니다.
+  `amount_incl_vat`는 VAT 포함 총액으로, 자금흐름 확인용으로만 보관한다.
+- `transactions.project_id`는 NULL 허용 → **공통비**(프로젝트 미귀속). 이 금액이
+  고정비 배부의 대상이 된다.
+- `transactions.is_manual_override = 1`이면 사람이 분류를 손댄 행이므로,
+  **재분류(reclassify) 시 절대 덮어쓰지 않는다.**
+- `transactions.is_duplicate_suspect = 1`은 같은 (날짜+거래처+금액)이 2회 이상
+  나타난 행의 2번째부터. **자동 삭제하지 않는다** — 같은 날 같은 금액을 두 번
+  지급하는 정상 거래가 실제로 존재하므로 판단은 사람이 한다.
+- `mandays` 인건비 = `headcount × days × daily_rate`
+- `loans.annual_rate`는 소수 표기 (4.5% → `0.045`)
+
+## 분류 규칙 (src/rules.py)
+
+계정체계는 회사마다 다르고 자주 바뀐다. 로직을 건드리지 않고 이 파일만
+고쳐서 대응할 수 있어야 한다.
+
+- `COLUMN_ALIASES` — 엑셀 컬럼명 별칭. 새 양식이 들어오면 코드가 아니라
+  여기에 별칭 한 줄을 추가한다.
+- `ACCOUNT_RULES` — (정규식, 계정과목)의 **순서 있는** 리스트. 먼저 걸리는
+  규칙이 이긴다. 순서에 의존하는 함정이 있으므로 규칙 추가 시 주의:
+  - `예인선 임차` → 임차료(고정) ✗ / 장비임차료(변동) ✓
+  - `측량 용역` → 외주가공비 ✗ / 검사수수료 ✓
+  - `사무용품` → 소모품비(변동) ✗ / 사무용품비(고정) ✓
+  이 함정들은 `tests/test_ingest.py::test_rule_precedence_traps`로 고정돼 있다.
+- `COST_BEHAVIOR` — 계정과목 → 변동/고정. 판정 기준은 **프로젝트 물량에
+  비례하면 변동, 수주가 없어도 나가면 고정**.
+- `AMBIGUOUS_ACCOUNTS` — 판단이 갈릴 수 있는 계정(수도광열비, 여비교통비,
+  차량유지비, 검사수수료). UI에서 "검토 권장"으로 표시된다. 대표·경리와
+  합의되면 `COST_BEHAVIOR`를 고치고 여기서 뺀다.
+
+**규칙에 안 걸리면 `미분류`로 남긴다.** 억지로 끼워 맞추면 손익이 조용히
+틀어진다. 미분류는 `cost_behavior='해당없음'`이라 변동비에도 고정비에도
+들어가지 않으므로, 미분류 총액을 UI에 항상 노출해야 한다.
+
+### 분류 우선순위
+1. 원본 엑셀에 계정이 이미 적혀 있으면 그대로 존중 (경리 담당자의 판단)
+2. 매출 거래는 무조건 매출 계정
+3. 적요 → 거래처명 순으로 키워드 규칙 적용
+4. 아무것도 안 걸리면 `미분류`
+
+### pandas NaN 함정
+pandas는 object 컬럼의 `None`을 `NaN`으로 바꿔 놓는데, `NaN`은 truthy다.
+`ingest._na_to_none()` / `classify._text()`를 거치지 않으면 빈 현장명이
+`'nan'`이라는 이름의 프로젝트로 들어가고 계정과목이 문자열 `'nan'`이 된다.
+실제로 그렇게 터졌던 자리이므로 새 필드를 추가할 때도 반드시 거쳐야 한다.
+
+## 규칙
+
+### 1. 모든 금액 계산은 반드시 pytest로 검증한다
+이 프로젝트의 최우선 규칙이다.
+
+- `src/profit.py`, `src/finance.py`, `src/classify.py`의 금액·비율을 산출하는
+  함수는 **테스트 없이 커밋하지 않는다.**
+- 새 계산식을 추가하면 그 즉시 `tests/`에 케이스를 추가한다.
+  최소한 (a) 정상 케이스, (b) 0/빈 데이터 경계 케이스를 포함한다.
+- 손익 항등식은 회귀 테스트로 고정한다:
+  `공헌이익 − 배부고정비 − 맨데이인건비 = 진짜 영업이익`
+- 배부 로직은 **배부 총액이 원본 총액과 일치**하는지 반드시 검증한다
+  (반올림 잔차 포함).
+
+### 2. 금액 단위·타입
+- 통화는 원(KRW), 정수 저장. 부동소수점 누적 오차를 피한다.
+- 비율(이율 등)만 `REAL`.
+- 반올림이 필요한 배부 계산은 잔차를 특정 대상에 몰아주어 합계를 보존한다.
+
+### 3. 추적성
+- 모든 `transactions` 행은 `source_file`을 남긴다. 대표가 숫자를 의심할 때
+  원본 엑셀까지 되짚을 수 있어야 한다.
+
+## 실행
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+
+python scripts/generate_sample_data.py   # 샘플 엑셀 생성 (data/sample/)
+python scripts/load_sample_data.py       # db/mooring.db 적재 + 품질 점검
+streamlit run app.py
+pytest
+```
