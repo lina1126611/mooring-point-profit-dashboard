@@ -155,9 +155,20 @@ def guess_tx_type(filename: str) -> str | None:
     return None
 
 
-def load_excel(path: str | Path, sheet_name: str | int = 0) -> pd.DataFrame:
-    """엑셀 파일을 DataFrame으로 읽는다."""
-    return pd.read_excel(path, sheet_name=sheet_name)
+def load_excel(
+    path: str | Path,
+    sheet_name: str | int = 0,
+    header: int = 0,
+) -> pd.DataFrame:
+    """엑셀 파일을 DataFrame으로 읽는다.
+
+    header 는 컬럼명이 있는 줄(0-base). ERP export 는 0행에 '매입(세금계산서)'
+    같은 제목만 있고 실제 컬럼명이 1행에 오는 경우가 있어서 열어 두었다.
+    지정하지 않으면 기존 동작(0행이 헤더)과 같다.
+    """
+    df = pd.read_excel(path, sheet_name=sheet_name, header=header)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df.dropna(how="all").reset_index(drop=True)
 
 
 # ===============================================================
