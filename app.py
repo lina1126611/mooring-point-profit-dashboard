@@ -83,6 +83,19 @@ def pct(value) -> str:
     return f"{value * 100:.1f}%"
 
 
+def eok(value) -> str:
+    """억 단위 요약 표기.
+
+    `1,860,320,000원` 은 열 자리라 한눈에 안 읽힌다. 30초 안에 파악하는 것이
+    목적인 자리에서는 `18.6억원` 이 훨씬 빠르다. 정확한 원 단위 금액은
+    바로 아래에 작게 병기하므로 정보가 사라지지는 않는다.
+    """
+    n = int(round(value or 0))
+    if abs(n) < EOK:
+        return f"{n:,}원"
+    return f"{n / EOK:.1f}억원"
+
+
 def style_chart(fig: go.Figure, height: int = 340) -> go.Figure:
     """차트 공통 서식. 한글 폰트·여백·격자를 여기서 한 번에 잡는다."""
     fig.update_layout(
@@ -445,6 +458,9 @@ def _inject_css() -> None:
             font-size: 3.4rem; font-weight: 700; line-height: 1.1;
             color: {C_BLUE_D}; letter-spacing: -0.02em;
         }}
+        .hero__exact {{
+            font-size: 0.9rem; color: {C_GRAY_D}; margin-top: 0.3rem;
+        }}
         .hero__sub {{
             font-size: 1.05rem; color: {C_INK}; margin-top: 0.6rem; line-height: 1.6;
         }}
@@ -460,61 +476,71 @@ def _inject_css() -> None:
 
 
 def _briefing_hero(summary: dict, gap: dict) -> None:
-    """히어로 = 진짜 영업이익 하나. 나머지는 그 숫자를 설명하는 재료다.
+    """히어로 = '회사에 남은 돈' 하나.
 
-    이전에는 KPI 카드 4장이 같은 크기로 놓여 있어서 무엇부터 봐야 하는지가
-    화면에 표현되지 않았다. 대표가 알아야 할 것은 '회사에 얼마 남나' 하나이므로
-    그것만 크게 두고, 매출·차이·다음달지출은 보조로 내린다.
+    이 화면을 보는 사람은 시간을 아까워하고, 회계 용어를 새로 배울 생각이 없다.
+    그래서 두 가지를 지킨다.
+
+    1. 라벨을 평범한 말로 쓴다. '진짜 영업이익'은 우리끼리 쓰는 용어지
+       대표가 배워야 할 말이 아니다. 정확한 회계 명칭은 아래 각주로 내린다.
+    2. 화면이 답을 말한다. 숫자 여러 개를 늘어놓고 '맨데이가 제일 크네'를
+       대표가 직접 알아채게 하지 않는다. 가장 큰 원인을 문장으로 적는다.
     """
+    # 차감 항목 중 최대 항목 = 이번 달 '왜 안 남았는지'의 답
+    deductions = [
+        ("설계 인건비", gap["맨데이인건비"]),
+        ("고정비", gap["고정비"] + gap["직접고정비"]),
+        ("이자", gap["이자"]),
+    ]
+    top_label, top_value = max(deductions, key=lambda x: x[1])
+    share = top_value / gap["차감합계"] * 100 if gap["차감합계"] else 0
+
+    cause = (
+        f"가장 큰 원인은 <b>{top_label} {eok(top_value)}</b> 입니다"
+        f" (빠져나간 돈의 {share:.0f}%)."
+        if gap["차감합계"]
+        else "차감된 비용이 없습니다."
+    )
+
     st.markdown(
         f"""
         <div class="hero">
-          <div class="hero__label">{summary['기준월표기']} 기준 · 진짜 영업이익 <b>(세전)</b></div>
-          <div class="hero__value">{won_kr(summary['진짜영업이익'])}</div>
+          <div class="hero__label">{summary['기준월표기']} 기준 · 회사에 남은 돈</div>
+          <div class="hero__value">{eok(summary['진짜영업이익'])}</div>
+          <div class="hero__exact">{won_kr(summary['진짜영업이익'])} · 이익률 {pct(summary['진짜이익률'])}</div>
           <div class="hero__sub">
-            현장이 벌어온 <b>{won_kr(summary['공헌이익'])}</b> 에서
-            <b>{won_kr(gap['차감합계'])}</b> 이 빠져나갔습니다.
-            이익률 {pct(summary['공헌이익률'])} → <b>{pct(summary['진짜이익률'])}</b>
+            현장에서 <b>{eok(summary['공헌이익'])}</b> 을 벌었지만
+            <b>{eok(gap['차감합계'])}</b> 이 빠져나갔습니다.<br>{cause}
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # 차감 항목은 금액 큰 순으로. 읽는 순서와 중요도가 어긋나면 안 된다
-    # (맨데이가 최대 누수인데 네 번째에 있으면 눈에 안 들어온다).
-    deductions = [
-        ("맨데이 인건비", gap["맨데이인건비"], "ERP에 안 잡히던 원가"),
-        ("고정비 배부", gap["고정비"], None),
-        ("이자비용", gap["이자"], None),
+    # 보조 수치는 3개까지만. 차이의 90%를 설명하는 두 항목과, 현금 감각 하나.
+    # 이자(6%)·현장 직접 고정비(3.5%)는 접힌 상세로 내렸다 — 30초 화면에서
+    # 3%짜리 항목은 노이즈다.
+    items = [
+        ("설계 인건비", gap["맨데이인건비"], "ERP에 안 잡히던 원가"),
+        ("고정비 · 이자", gap["고정비"] + gap["직접고정비"] + gap["이자"],
+         "임차료 · 관리직 급여 · 대출이자"),
+        ("다음 달 나갈 돈", summary["다음달지출예정"], "수주가 없어도 나가는 돈"),
     ]
-    if gap["직접고정비"]:
-        deductions.append(("현장 직접 고정비", gap["직접고정비"], None))
-    deductions.sort(key=lambda x: x[1], reverse=True)
-
-    items = deductions + [
-        (f"{summary['기준월표기']} 매출", summary["이번달매출"],
-         f"전월 {won_kr(summary['전월매출'])}"),
-        ("다음 달 나갈 돈", summary["다음달지출예정"], "고정비 + 이자"),
-    ]
-
     cells = "".join(
         f'<div><div class="stat__label">{label}</div>'
-        f'<div class="stat__value">{won_kr(value)}</div>'
-        + (f'<div class="stat__note">{note}</div>' if note else "")
-        + "</div>"
+        f'<div class="stat__value">{eok(value)}</div>'
+        f'<div class="stat__note">{note}</div></div>'
         for label, value, note in items
     )
     st.markdown(f'<div class="statrow">{cells}</div>', unsafe_allow_html=True)
 
-    # 이 숫자가 무엇을 빼고 무엇을 안 뺐는지 화면에 적어 둔다.
     # 회계 기준으로 '영업이익'은 이자비용을 빼지 않으므로(이자는 영업외비용),
-    # 이자를 뺀 이 값은 영업이익보다 세전이익에 가깝다. 그리고 법인세는
-    # 발생은 당기지만 납부가 이듬해라, 이 금액이 곧 쓸 수 있는 돈도 아니다.
+    # 이자를 뺀 이 값은 영업이익보다 세전이익에 가깝다. 법인세는 발생이 당기,
+    # 납부가 이듬해라 이 금액이 곧 쓸 수 있는 현금도 아니다.
     st.markdown(
-        '<div class="quiet">이자비용을 뺀 <b>세전</b> 금액입니다. '
-        "법인세는 포함돼 있지 않고, 발생은 올해지만 납부는 이듬해입니다 — "
-        "쓸 수 있는 현금과는 다릅니다.</div>",
+        '<div class="quiet">회계상 명칭은 <b>진짜 영업이익(세전)</b> 입니다. '
+        "이자비용은 뺐고 법인세는 빼지 않았습니다 — 법인세는 올해 발생해도 "
+        "납부가 이듬해라, 이 금액이 곧 지금 쓸 수 있는 현금은 아닙니다.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1166,16 +1192,45 @@ PAGES = {
     "데이터": render_data,
 }
 
+# 메뉴를 역할로 나눈다.
+#
+# 대표가 실제로 쓰는 화면은 '아침 브리핑'과 '리포트' 둘뿐이다. 그런데 다섯 개가
+# 같은 무게로 나열돼 있으면 열자마자 "내가 이걸 다 조작해야 하나" 로 읽힌다.
+# 엑셀 업로드·분류 수정·차입금 등록은 경리와 실무자의 일이다.
+# 기능을 없애는 게 아니라, 누구 화면인지를 메뉴에 드러낸다.
+MENU_GROUPS = [
+    ("보기", ["아침 브리핑", "리포트"]),
+    ("관리", ["프로젝트 상세", "설정", "데이터"]),
+]
+_GROUP_OF = {page: group for group, pages in MENU_GROUPS for page in pages}
+MENU_ORDER = [page for _, pages in MENU_GROUPS for page in pages]
+
+
+def _menu_label(page: str) -> str:
+    """'관리' 화면에만 표식을 달아 조회용과 구분한다."""
+    return page if _GROUP_OF[page] == "보기" else f"{page}  ⚙"
+
 
 def main() -> None:
     st.title("⚓ Mooring Point 경영지원 대시보드")
-    choice = st.sidebar.radio("메뉴", list(PAGES.keys()))
+
+    st.sidebar.caption("**보기** — 대표님이 보시는 화면")
+    choice = st.sidebar.radio(
+        "메뉴",
+        MENU_ORDER,
+        format_func=_menu_label,
+        label_visibility="collapsed",
+    )
+    st.sidebar.caption("⚙ 표시는 **관리용** — 경리·실무 담당자가 쓰는 화면입니다.")
+    st.sidebar.divider()
     st.sidebar.caption(
-        "**아침 브리핑** — 오늘 상황 30초 요약\n\n"
-        "**프로젝트 상세** — 현장별 폭포차트·거래·맨데이\n\n"
-        "**리포트** — 경영 리포트 생성·다운로드\n\n"
-        "**설정** — 차입금·고정비·배부기준\n\n"
-        "**데이터** — 엑셀 업로드·분류 수정"
+        {
+            "아침 브리핑": "오늘 상황 30초 요약",
+            "리포트": "경영 리포트 생성 · 내려받기",
+            "프로젝트 상세": "현장별 폭포차트 · 거래 · 맨데이 입력",
+            "설정": "차입금 · 고정비 · 배부기준 · 표준일당",
+            "데이터": "엑셀 업로드 · 분류 수정",
+        }[choice]
     )
     PAGES[choice]()
 

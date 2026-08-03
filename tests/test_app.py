@@ -69,10 +69,72 @@ def test_briefing_leads_with_operating_profit():
 
 
 def test_briefing_shows_gap_components():
-    """왜 안 남았는지 — 고정비·이자·맨데이가 보조 수치로 함께 있다."""
+    """왜 안 남았는지 — 보조 수치는 3개까지만.
+
+    이 화면을 보는 사람은 시간을 아까워한다. 차이의 90%를 설명하는 두 항목과
+    현금 감각 하나면 충분하고, 3%짜리 항목은 30초 화면에서 노이즈다.
+    """
     html = _briefing_html()
-    for label in ("고정비 배부", "이자비용", "맨데이 인건비", "다음 달 나갈 돈"):
+    for label in ("설계 인건비", "고정비 · 이자", "다음 달 나갈 돈"):
         assert label in html, label
+    assert html.count('class="stat__label"') == 3
+
+
+def test_briefing_states_the_biggest_cause():
+    """화면이 답을 말한다.
+
+    숫자를 늘어놓고 '맨데이가 제일 크네'를 대표가 직접 알아채게 하지 않는다.
+    가장 큰 차감 항목을 문장으로 지목한다.
+    """
+    from src import db as db_module
+    from src import report as report_module
+
+    conn = db_module.open_app_db()
+    gap = report_module.profit_gap(conn)
+    if not gap["차감합계"]:
+        pytest.skip("차감 항목이 없다")
+
+    biggest = max(
+        [("설계 인건비", gap["맨데이인건비"]),
+         ("고정비", gap["고정비"] + gap["직접고정비"]),
+         ("이자", gap["이자"])],
+        key=lambda x: x[1],
+    )[0]
+
+    html = _briefing_html()
+    assert "가장 큰 원인은" in html
+    assert biggest in html
+
+
+def test_briefing_hero_uses_eok_with_exact_amount():
+    """히어로는 억 단위로 읽히고, 정확한 원 단위 금액을 함께 적는다.
+
+    열 자리 숫자는 한눈에 안 들어온다. 그렇다고 정확한 금액을 지우면
+    회계 화면으로서 못 쓰므로 바로 아래 작게 병기한다.
+    """
+    from src import db as db_module
+    from src import report as report_module
+
+    conn = db_module.open_app_db()
+    profit_won = report_module.company_summary(conn)["진짜영업이익"]
+    if abs(profit_won) < 100_000_000:
+        pytest.skip("억 단위가 아니다")
+
+    html = _briefing_html()
+    assert "억원" in html
+    assert f"{profit_won:,}원" in html
+
+
+def test_briefing_avoids_jargon_in_hero_label():
+    """히어로 라벨은 평범한 말로. 회계 명칭은 각주로 내린다.
+
+    대표는 '진짜 영업이익'이라는 우리끼리 쓰는 용어를 배울 이유가 없다.
+    """
+    html = _briefing_html()
+    label_line = html[html.index('class="hero__label"'):html.index('class="hero__value"')]
+    assert "회사에 남은 돈" in label_line
+    assert "영업이익" not in label_line          # 라벨에는 없고
+    assert "진짜 영업이익(세전)" in html          # 각주에는 있다
 
 
 def test_briefing_amounts_use_comma_and_won():
@@ -211,30 +273,26 @@ def test_report_page_ai_option_disabled_without_key(monkeypatch):
     assert ai.value is False
 
 
-def test_briefing_orders_deductions_by_size():
-    """차감 항목은 금액 큰 순으로 놓인다.
+def test_menu_separates_viewing_from_managing():
+    """메뉴가 역할을 드러낸다.
 
-    읽는 순서가 중요도와 어긋나면 히어로 아래 수치가 눈에 안 들어온다.
-    (맨데이가 최대 누수인데 네 번째에 있던 것을 고친 자리)
+    대표가 쓰는 화면은 브리핑·리포트 둘뿐인데 다섯 개가 같은 무게로 나열되면
+    "내가 이걸 다 조작해야 하나" 로 읽힌다. 관리용에만 표식을 단다.
     """
-    from src import db as db_module
-    from src import report as report_module
+    import app
 
-    conn = db_module.open_app_db()
-    gap = report_module.profit_gap(conn)
-    if not gap["차감합계"]:
-        pytest.skip("차감 항목이 없다")
+    assert app.MENU_ORDER[:2] == ["아침 브리핑", "리포트"], app.MENU_ORDER
+    assert app._menu_label("아침 브리핑") == "아침 브리핑"
+    assert app._menu_label("리포트") == "리포트"
+    for page in ("프로젝트 상세", "설정", "데이터"):
+        assert app._menu_label(page).endswith("⚙"), page
 
-    html = _briefing_html()
-    labels = {
-        "맨데이 인건비": gap["맨데이인건비"],
-        "고정비 배부": gap["고정비"],
-        "이자비용": gap["이자"],
-    }
-    present = {k: v for k, v in labels.items() if k in html}
-    positions = sorted(present, key=lambda k: html.index(k))
-    amounts = [present[k] for k in positions]
-    assert amounts == sorted(amounts, reverse=True), list(zip(positions, amounts))
+
+def test_menu_covers_every_page():
+    """그룹에서 빠진 페이지가 없다 — 새 화면을 넣고 등록을 잊으면 안 된다."""
+    import app
+
+    assert set(app.MENU_ORDER) == set(app.PAGES)
 
 
 def test_briefing_labels_profit_as_pre_tax():
