@@ -19,6 +19,11 @@ VARIABLE = "변동"
 FIXED = "고정"
 NOT_APPLICABLE = "해당없음"
 
+# db/schema.sql 의 cost_behavior CHECK 제약과 같은 집합. 사람이 입력하는
+# 경로(로컬 오버라이드 CSV 등)를 검증할 때 쓴다 — 오타가 들어오면 그 계정이
+# 변동비·고정비 어디에도 안 들어가 금액이 조용히 사라진다.
+VALID_BEHAVIORS = (VARIABLE, FIXED, NOT_APPLICABLE)
+
 
 # ---------------------------------------------------------------
 # 계정과목 키워드 규칙
