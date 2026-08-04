@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# 실데이터 커밋 차단 훅. scripts/install_hooks.py 가 .git/hooks/ 로 복사한다.
+#
+# 이 파일은 얇게 유지한다 — 판정 로직은 scripts/check_staged_files.py 에 두고
+# 여기서는 파이썬을 찾아 넘기는 일만 한다. 그래야 규칙을 pytest 로 검증할 수
+# 있다. (CLAUDE.md: 로직을 테스트 가능한 곳에 둔다)
+#
+# 경로에 한글·공백이 들어 있어서 모든 변수를 따옴표로 감싼다.
+
+set -u
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+CHECKER="$ROOT/scripts/check_staged_files.py"
+
+[ -f "$CHECKER" ] || exit 0   # 검사기가 없는 브랜치에서는 통과시킨다
+
+# .venv 를 먼저 본다 — 전역 파이썬에는 의존성이 없을 수 있다
+for CANDIDATE in \
+    "$ROOT/.venv/Scripts/python.exe" \
+    "$ROOT/.venv/bin/python" \
+    "$ROOT/venv/Scripts/python.exe" \
+    "$ROOT/venv/bin/python"
+do
+    if [ -x "$CANDIDATE" ]; then
+        exec "$CANDIDATE" "$CHECKER"
+    fi
+done
+
+for CANDIDATE in python3 python py; do
+    if command -v "$CANDIDATE" >/dev/null 2>&1; then
+        exec "$CANDIDATE" "$CHECKER"
+    fi
+done
+
+# 파이썬을 못 찾으면 통과시키지 않는다. 조용히 넘기면 훅이 있다고 믿는 채로
+# 검사가 안 돌고, 그게 이 훅을 두는 목적과 정반대다.
+echo "" >&2
+echo "✗ 커밋을 중단했습니다 — 파이썬을 찾지 못해 실데이터 검사를 못 돌렸습니다." >&2
+echo "  .venv 를 만들거나 python 을 PATH 에 두세요." >&2
+echo "  검사 없이 커밋하려면: git commit --no-verify" >&2
+echo "" >&2
+exit 1
