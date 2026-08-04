@@ -1,0 +1,19 @@
+# 줄바꿈·파일형식 정책
+#
+# ★ 셸 스크립트는 반드시 LF 로 체크아웃돼야 한다.
+# core.autocrlf=true 인 Windows PC 에서 클론하면 git 이 LF 를 CRLF 로 바꾼다.
+# 그러면 sh 가 첫 줄을 '#!/bin/sh\r' 로 읽고 'bad interpreter' 로 죽는다.
+# pre-commit 훅이 그렇게 되면 **조용히 작동하지 않는다** — 실데이터 차단이
+# 걸려 있다고 믿는 채로 검사가 안 도는 상태가 되므로 여기서 못 박는다.
+scripts/hooks/* text eol=lf
+*.sh text eol=lf
+
+# 엑셀은 바이너리. 줄바꿈 변환이 닿으면 파일이 깨진다.
+# git 이 자동 판별하긴 하지만, 원본 회계 자료를 다루는 저장소라 명시한다.
+*.xls binary
+*.xlsx binary
+*.xlsm binary
+*.xlsb binary
+
+# SQLite 파일 (db/*.db 는 gitignore 대상이지만 실수로 add 될 때를 대비)
+*.db binary
