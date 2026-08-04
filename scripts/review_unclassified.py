@@ -37,13 +37,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from src import erp_forms, ingest, pseudonym  # noqa: E402
+from src import erp_forms, ingest, paths, pseudonym  # noqa: E402
 from src.classify import classify_dataframe  # noqa: E402
 from src.rules import ERP_FORMS, UNCLASSIFIED  # noqa: E402
 
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-LOCAL_DIR = PROJECT_ROOT / "data" / "local"
-MAPPING_PATH = LOCAL_DIR / "mappings.json"
+# 경로는 src/paths.py 가 해석한다 (실데이터는 저장소 폴더 밖).
+MAPPING_NAME = "mappings.json"
 
 # 양식별로 '거래처' 칸의 성격이 다르다. 세금계산서는 사업자(vendor), 간이영수증은
 # 카드 가맹점(merchant) 이라 가명 접두어도 다르다.
@@ -58,9 +57,9 @@ def won(n) -> str:
     return f"{int(n or 0):,}"
 
 
-def find_file(spec: dict) -> Path | None:
+def find_file(spec: dict, raw_dir: Path) -> Path | None:
     pattern = re.compile(spec["match"])
-    for path in sorted(RAW_DIR.glob("*.xls*")):
+    for path in sorted(raw_dir.glob("*.xls*")):
         if pattern.search(path.name):
             return path
     return None
@@ -169,15 +168,28 @@ def main() -> None:
     if "--top" in argv:
         top = int(argv[argv.index("--top") + 1])
 
-    if not RAW_DIR.exists() or not any(RAW_DIR.glob("*.xls*")):
-        sys.exit(f"{RAW_DIR} 에 실데이터가 없습니다.")
+    raw_dir = paths.raw_dir()
+    local_dir = paths.local_dir()
+    print("=== 경로 ===")
+    print(paths.describe(("raw", "local")))
+    for kind, p in (("raw", raw_dir), ("local", local_dir)):
+        warning = paths.warn_if_inside_repo(kind, p)
+        if warning:
+            print(warning)
+    print()
+
+    if not raw_dir.exists() or not any(raw_dir.glob("*.xls*")):
+        sys.exit(
+            f"{raw_dir} 에 실데이터가 없습니다.\n"
+            f"paths.local.json 의 'raw' 경로를 확인하세요."
+        )
 
     frames = []
     print("=== 미분류 추출 ===")
     for spec in ERP_FORMS:
         if only and only not in spec["name"]:
             continue
-        path = find_file(spec)
+        path = find_file(spec, raw_dir)
         if path is None:
             continue
         got = unclassified_rows(spec, path)
@@ -201,7 +213,7 @@ def main() -> None:
     vendors = by_vendor(df)
 
     print("\n=== 거래처별 (가명 표기 — 원본 상호는 CSV 에만) ===")
-    mappings = pseudonym.load_mapping(MAPPING_PATH)
+    mappings = pseudonym.load_mapping(local_dir / MAPPING_NAME)
     alias_of: dict[str, str] = {}
     for kind in ("vendor", "merchant"):
         alias_of.update(mappings.get(kind, {}))
@@ -232,7 +244,7 @@ def main() -> None:
         print(f"    상위 {n:3d}종 = 금액의 약 {cut}%")
 
     # -----------------------------------------------------------
-    v_out = LOCAL_DIR / "미분류_거래처별.csv"
+    v_out = local_dir / "미분류_거래처별.csv"
     write_csv(v_out, [
         {
             "거래처": r.거래처, "건수": int(r.건수), "공급가액": int(r.공급가액),
@@ -244,16 +256,18 @@ def main() -> None:
         for r in vendors.itertuples(index=False)
     ])
 
-    r_out = LOCAL_DIR / "미분류_전체행.csv"
+    r_out = local_dir / "미분류_전체행.csv"
     cols = ["date", "vendor", "description", "project", "amount",
             "amount_incl_vat", "source_file", "상계"]
     write_csv(r_out, df.sort_values("amount", ascending=False)[cols]
               .assign(계정="", 근거="").to_dict("records"))
 
-    print(f"\n=== 산출 ===")
-    print(f"  {v_out.relative_to(PROJECT_ROOT)}   ({len(vendors)}행) ← '계정' 칸을 채우세요")
-    print(f"  {r_out.relative_to(PROJECT_ROOT)}   ({len(df)}행)")
-    print("\n  채운 뒤: data/local/거래처_계정.csv 로 저장 → load_real_data.py 재실행")
+    # 절대경로로 찍는다 — local_dir 은 저장소 밖이라 relative_to 가 예외를 낸다
+    print("\n=== 산출 ===")
+    print(f"  {v_out}   ({len(vendors)}행) ← '계정' 칸을 채우세요")
+    print(f"  {r_out}   ({len(df)}행)")
+    print(f"\n  채운 뒤: {local_dir / '거래처_계정.csv'} 로 저장")
+    print("  → load_real_data.py 재실행")
     print("  (공개 저장소라 실제 거래처명을 rules.py 에 넣지 않습니다)")
 
 

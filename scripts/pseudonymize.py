@@ -34,14 +34,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from src import local_llm, pseudonym  # noqa: E402
+from src import local_llm, paths, pseudonym  # noqa: E402
 from src.classify import classify_account  # noqa: E402
 from src.rules import UNCLASSIFIED  # noqa: E402
 
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-LOCAL_DIR = PROJECT_ROOT / "data" / "local"
-PSEUDO_DIR = PROJECT_ROOT / "data" / "pseudo"
-MAPPING_PATH = LOCAL_DIR / "mappings.json"
+# 경로는 src/paths.py 가 해석한다 — 세 폴더 모두 저장소 밖에 둔다.
+# 모듈 로드 시점에 굳히지 않는다(설정을 고친 뒤 다시 돌릴 때를 위해).
+MAPPING_NAME = "mappings.json"
 
 # ---------------------------------------------------------------
 # ERP 양식별 설정
@@ -101,8 +100,8 @@ FORMS: list[dict] = [
 MERCHANT_FORM = "매입(간이영수증)_202608031250.xls"
 
 
-def read_form(name: str) -> pd.DataFrame | None:
-    path = RAW_DIR / name
+def read_form(name: str, raw_dir: Path) -> pd.DataFrame | None:
+    path = raw_dir / name
     if not path.exists():
         print(f"  [건너뜀] {name} 없음")
         return None
@@ -120,14 +119,16 @@ def won(n) -> str:
 # ===============================================================
 
 
-def build_mappings(frames: dict[str, pd.DataFrame]) -> dict[str, dict[str, str]]:
+def build_mappings(
+    frames: dict[str, pd.DataFrame], mapping_path: Path
+) -> dict[str, dict[str, str]]:
     """전 파일을 훑어 성격별 매핑표를 만든다.
 
     파일별로 따로 만들면 같은 거래처가 파일마다 다른 가명을 받아 대조가
     불가능해진다. 그래서 성격(vendor/project/...) 단위로 하나만 만든다.
     기존 매핑표가 있으면 이어 붙인다(이미 검토한 가명이 안 바뀌도록).
     """
-    mappings = pseudonym.load_mapping(MAPPING_PATH)
+    mappings = pseudonym.load_mapping(mapping_path)
 
     for kind, prefix in pseudonym.DEFAULT_PREFIXES.items():
         values: list = []
@@ -234,8 +235,10 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 # ===============================================================
 
 
-def export_pseudo(frames: dict[str, pd.DataFrame], mappings: dict) -> list[str]:
-    PSEUDO_DIR.mkdir(parents=True, exist_ok=True)
+def export_pseudo(
+    frames: dict[str, pd.DataFrame], mappings: dict, pseudo_dir: Path
+) -> list[str]:
+    pseudo_dir.mkdir(parents=True, exist_ok=True)
     leaks: list[str] = []
 
     for form in FORMS:
@@ -252,7 +255,7 @@ def export_pseudo(frames: dict[str, pd.DataFrame], mappings: dict) -> list[str]:
                 leaks.append(f"{form['file']} · {column}: {report['미등록값'][:3]}")
             out[column] = pseudonym.apply_mapping(out[column], mapping)
 
-        target = PSEUDO_DIR / (Path(form["file"]).stem + "_가명.xlsx")
+        target = pseudo_dir / (Path(form["file"]).stem + "_가명.xlsx")
         out.to_excel(target, index=False)
         print(f"  {target.name}  ({len(out)}행)")
     return leaks
@@ -263,28 +266,45 @@ def main() -> None:
     use_llm = "--llm" in sys.argv
     review_only = "--review" in sys.argv
 
-    if not RAW_DIR.exists() or not any(RAW_DIR.glob("*.xls")):
-        sys.exit(f"{RAW_DIR} 에 실데이터가 없습니다.")
+    raw_dir = paths.raw_dir()
+    local_dir = paths.local_dir()
+    pseudo_dir = paths.pseudo_dir()
+    mapping_path = local_dir / MAPPING_NAME
+
+    print("=== 경로 ===")
+    print(paths.describe())
+    for kind, p in (("raw", raw_dir), ("local", local_dir), ("pseudo", pseudo_dir)):
+        warning = paths.warn_if_inside_repo(kind, p)
+        if warning:
+            print(warning)
+    print()
+
+    if not raw_dir.exists() or not any(raw_dir.glob("*.xls")):
+        sys.exit(
+            f"{raw_dir} 에 실데이터가 없습니다.\n"
+            f"paths.local.json 의 'raw' 경로를 확인하세요."
+        )
 
     print("=== 원본 읽기 ===")
-    frames = {f["file"]: read_form(f["file"]) for f in FORMS}
+    frames = {f["file"]: read_form(f["file"], raw_dir) for f in FORMS}
     loaded = {k: v for k, v in frames.items() if v is not None}
     print(f"  {len(loaded)}개 파일, 총 {sum(len(v) for v in loaded.values())}행")
 
     print("\n=== ① 가명 매핑표 ===")
-    mappings = build_mappings(frames)
+    mappings = build_mappings(frames, mapping_path)
     for kind, m in sorted(mappings.items()):
         print(f"  {pseudonym.DEFAULT_PREFIXES.get(kind, kind):6} {len(m):4d}종")
-    pseudonym.save_mapping(MAPPING_PATH, mappings)
-    print(f"  저장: {MAPPING_PATH.relative_to(PROJECT_ROOT)}  ← 외부 유출 금지")
+    pseudonym.save_mapping(mapping_path, mappings)
+    # 절대경로로 찍는다 — 저장소 밖이라 relative_to 가 예외를 낸다
+    print(f"  저장: {mapping_path}  ← 외부 유출 금지")
 
     print("\n=== ② 사용처 검토표 ===")
     card = frames.get(MERCHANT_FORM)
     if card is not None:
         rows = merchant_review(card, use_llm)
-        out = LOCAL_DIR / "사용처_검토표.csv"
+        out = local_dir / "사용처_검토표.csv"
         write_csv(out, rows)
-        print(f"  저장: {out.relative_to(PROJECT_ROOT)}  ({len(rows)}종)")
+        print(f"  저장: {out}  ({len(rows)}종)")
         # 파레토 안내 — 어디까지 보면 되는지
         for cut in (80, 90):
             n = sum(1 for r in rows if r["누적비중%"] <= cut)
@@ -296,13 +316,13 @@ def main() -> None:
         return
 
     print("\n=== ③ 가명화 데이터 ===")
-    leaks = export_pseudo(frames, mappings)
+    leaks = export_pseudo(frames, mappings, pseudo_dir)
     if leaks:
         print("\n  ★ 미등록 값이 있어 외부로 내보내면 안 됩니다:")
         for line in leaks:
             print(f"    - {line}")
     else:
-        print(f"  전 컬럼 가명화 확인 완료 → {PSEUDO_DIR.relative_to(PROJECT_ROOT)}")
+        print(f"  전 컬럼 가명화 확인 완료 → {pseudo_dir}")
 
     if not use_llm and not local_llm.available():
         print(

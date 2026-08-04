@@ -35,12 +35,21 @@ if hasattr(sys.stdout, "reconfigure"):
 ALLOWED_DIRS: tuple[str, ...] = ("data/sample/",)
 
 # 선언상 외부로 나가면 안 되는 디렉터리. .gitignore 가 뚫렸을 때의 2차 방어.
-SECRET_DIRS: tuple[str, ...] = ("data/raw/", "data/local/", "data/pseudo/")
+#
+# data/raw|local|pseudo 는 2026-08-04 에 저장소 밖으로 옮겼지만(src/paths.py)
+# 규칙은 남긴다 — 누가 다시 여기에 두면 막아야 한다.
+# 뒤의 둘은 사람이 손으로 만든 작업 폴더로, 수령 자료와 멘토링 전사문이 들어 있다.
+SECRET_DIRS: tuple[str, ...] = (
+    "data/raw/", "data/local/", "data/pseudo/",
+    "씨웨이테크 진짜 데이터/", "피드백/",
+)
 
 # 수령한 ERP export 와 그 파생물의 파일명 조각. 경로와 무관하게 잡는다.
 NAME_MARKERS: tuple[str, ...] = (
     "매입(", "매출(", "급여대장", "4대보험", "간이영수증", "세금계산서",
     "국세_지방세", "mappings.json", "검토표", "거래처_계정",
+    # 회사와 주고받은 문서. 엑셀이 아니라 확장자·경로 규칙에 안 걸린다.
+    "데이터요청리스트", "전사문", "현황정리", "부분가명", "가명처리",
 )
 
 SPREADSHEET_EXT: tuple[str, ...] = (".xls", ".xlsx", ".xlsm", ".xlsb")

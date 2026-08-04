@@ -1,0 +1,7 @@
+{
+  "_설명": "이 파일을 paths.local.json 으로 복사하고 경로를 자기 PC 에 맞게 고치세요. paths.local.json 은 .gitignore 대상입니다 (사람마다 위치가 다르고, 경로에 이름이 들어갑니다).",
+  "_왜": "실데이터를 저장소 폴더 밖에 두기 위한 설정입니다. .gitignore 와 pre-commit 훅은 커밋만 막고 읽기는 막지 못하므로, 이 폴더를 읽는 도구(AI 에이전트, 백업 동기화 등)에는 안에 있는 파일이 그대로 노출됩니다.",
+  "raw": "C:/Users/이름/mooring-private/raw",
+  "local": "C:/Users/이름/mooring-private/local",
+  "pseudo": "C:/Users/이름/mooring-private/pseudo"
+}

@@ -42,9 +42,22 @@ def reasons(paths, read_head=None) -> dict[str, str]:
     "data/local/mappings.json",
     "data/local/사용처_검토표.csv",
     "data/pseudo/매출(세금계산서)_202608031241_가명.xlsx",
+    "씨웨이테크 진짜 데이터/SWT/가명처리_급여대장_202608031253.xlsx",
+    "피드백/전사문.pdf",
 ])
 def test_비밀_디렉터리는_전부_막는다(path):
     """gitignore 가 뚫렸을 때의 2차 방어선."""
+    assert path in reasons([path])
+
+
+@pytest.mark.parametrize("path", [
+    "메모/씨웨이테크_데이터요청리스트_회신.docx",   # 엑셀이 아니라 확장자 규칙에 안 걸림
+    "정리/Mooring_Point_부분가명_데이터분석.xlsx",
+    "temp/가명처리_매출.xlsx",
+    "백업/현황정리_2026-08-03.pdf",
+])
+def test_회사와_주고받은_문서도_파일명으로_잡는다(path):
+    """비밀 디렉터리 밖으로 복사해 둔 경우. 확장자가 엑셀이 아닌 것도 있다."""
     assert path in reasons([path])
 
 

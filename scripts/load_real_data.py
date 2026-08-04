@@ -30,11 +30,13 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from src import db as db_module  # noqa: E402
-from src import erp_forms, finance, ingest, profit  # noqa: E402
+from src import erp_forms, finance, ingest, paths, profit  # noqa: E402
 from src.classify import classification_stats, classify_dataframe  # noqa: E402
 from src.rules import COST_BEHAVIOR, ERP_FORMS, UNCLASSIFIED  # noqa: E402
 
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
+# 실데이터는 저장소 폴더 밖에 둔다 (src/paths.py 의 주석 참고).
+# 모듈 로드 시점에 굳히지 않고 main() 에서 해석한다 — 설정을 고친 뒤 다시
+# 돌리는 경우에 옛 경로가 남으면 "왜 안 바뀌지" 가 된다.
 DB_PATH = PROJECT_ROOT / "db" / "mooring.db"
 
 # 미분류 비율이 이 선을 넘으면 규칙 보강이 필요하다는 신호 (CLAUDE.md)
@@ -45,9 +47,9 @@ def won(n) -> str:
     return f"{int(n or 0):,}원"
 
 
-def find_file(spec: dict) -> Path | None:
+def find_file(spec: dict, raw_dir: Path) -> Path | None:
     pattern = re.compile(spec["match"])
-    for path in sorted(RAW_DIR.glob("*.xls*")):
+    for path in sorted(raw_dir.glob("*.xls*")):
         if pattern.search(path.name):
             return path
     return None
@@ -158,8 +160,19 @@ def resolve_db_path(argv: list[str]) -> Path:
 
 
 def main() -> None:
-    if not RAW_DIR.exists() or not any(RAW_DIR.glob("*.xls*")):
-        sys.exit(f"{RAW_DIR} 에 실데이터가 없습니다.")
+    raw_dir = paths.raw_dir()
+    print(f"실데이터 경로: {raw_dir}  [{paths.origin('raw')}]")
+    warning = paths.warn_if_inside_repo("raw", raw_dir)
+    if warning:
+        print(warning)
+    print()
+
+    if not raw_dir.exists() or not any(raw_dir.glob("*.xls*")):
+        sys.exit(
+            f"{raw_dir} 에 실데이터가 없습니다.\n"
+            f"paths.local.json 의 'raw' 경로를 확인하세요 "
+            f"(양식: paths.local.example.json)."
+        )
 
     db_path = resolve_db_path(sys.argv[1:])
     if db_path.exists():
@@ -178,7 +191,7 @@ def main() -> None:
     print("=== 적재 ===")
     total_read = 0
     for spec in ERP_FORMS:
-        path = find_file(spec)
+        path = find_file(spec, raw_dir)
         if path is None:
             print(f"  {spec['name']:20} 파일 없음 — 건너뜀")
             continue

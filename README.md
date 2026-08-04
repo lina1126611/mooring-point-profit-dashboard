@@ -79,6 +79,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python scripts/install_hooks.py          # ★ 실데이터 커밋 차단 (각자 한 번)
+copy paths.local.example.json paths.local.json   # ★ 실데이터 위치 설정 후 경로 수정
 
 python scripts/generate_sample_data.py   # 샘플 엑셀 생성 (data/sample/)
 python scripts/load_sample_data.py       # db/mooring.db 적재 + 품질 점검
@@ -106,6 +107,7 @@ src/
   report.py         리포트 조립 (요약표, 차트용 데이터)
   pseudonym.py      가명화 (식별자 → 되돌릴 수 있는 가명)
   local_llm.py      로컬 LLM(Ollama) 보조 분류 — 데이터를 PC 밖으로 안 보낸다
+  paths.py          실데이터 경로 해석 — 민감한 자료를 저장소 폴더 밖에 둔다
 scripts/
   generate_sample_data.py   샘플 ERP 엑셀 생성
   load_sample_data.py       샘플 적재 + 통합 품질 점검
@@ -155,18 +157,42 @@ UI 코드에 계산식을 넣으면 테스트가 불가능해지기 때문이다
 
 ## 실데이터 취급
 
-이 저장소는 공개다. 실제 회계 자료를 다룰 때는 두 겹으로 막는다.
+이 저장소는 공개다. 실제 회계 자료는 **저장소 폴더 밖**에 두고, 커밋 경로도
+두 겹으로 막는다.
 
-| 경로 | 내용 | 공유 |
+### 1) 위치 — 폴더 밖에 둔다
+
+`.gitignore` 와 pre-commit 훅은 **커밋**을 막는다. **읽기는 막지 못한다.**
+저장소 폴더를 AI 에이전트·코드 도구·백업 동기화에 물리면 그 안의 파일은 그냥
+읽힌다. 그래서 경로 자체를 밖으로 옮긴다 — 관례가 아니라 위치로 막는 방식이다.
+
+`paths.local.example.json` 을 `paths.local.json` 으로 복사하고 자기 PC 경로를 적는다.
+
+```json
+{
+  "raw":    "C:/Users/이름/mooring-private/raw",
+  "local":  "C:/Users/이름/mooring-private/local",
+  "pseudo": "C:/Users/이름/mooring-private/pseudo"
+}
+```
+
+환경변수 `MOORING_RAW_DIR` / `MOORING_LOCAL_DIR` / `MOORING_PSEUDO_DIR` 가 있으면
+그쪽이 이긴다. 아무것도 없으면 저장소 내 `data/raw` 등으로 떨어지며 **스크립트가
+경고를 찍는다** — 동작은 시키되 옮기게 만든다. 스크립트는 실행할 때마다 어느
+경로를 읽었는지 출처와 함께 표시한다(`src/paths.py`).
+
+| 성격 | 내용 | 공유 |
 |---|---|---|
-| `data/sample/` | 생성된 가상 데이터 | 저장소에 포함 |
-| `data/raw/` | 원본 ERP export | **금지** |
-| `data/local/` | 가명 매핑표·검토표 (원본 그대로) | **금지** |
-| `data/pseudo/` | 가명화 데이터 — 이름은 가려도 **금액은 실제값** | 사람이 직접 판단 |
+| `data/sample/` (저장소 안) | 생성된 가상 데이터 | 저장소에 포함 |
+| `raw` | 원본 ERP export | **금지** |
+| `local` | 가명 매핑표·검토표 (원본 그대로) | **금지** — 이게 새면 가명화가 무의미하다 |
+| `pseudo` | 가명화 데이터 — 이름은 가려도 **금액은 실제값** | 사람이 직접 판단 |
 | `db/*.db` | 적재된 SQLite | **금지** |
 
-1. **`.gitignore`** — 위 경로를 제외한다. 다만 *지정된 경로*만 막으므로
-   `data/` 밖에 두면 걸리지 않는다.
+### 2) 커밋 차단 — 두 겹
+
+1. **`.gitignore`** — 지정된 경로를 제외한다. 다만 *경로*만 보므로 다른 곳에
+   두면 걸리지 않는다.
 2. **pre-commit 훅** — 경로·파일명·매직바이트로 잡으므로 옮기거나 확장자를
    바꿔도 걸린다. `python scripts/install_hooks.py` 로 설치한다.
 

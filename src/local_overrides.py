@@ -8,8 +8,8 @@
     그래서 판단 내용은 gitignore 되는 data/local/ 에 두고, 코드(여기)는
     '그 파일을 읽어 적용하는 방법' 만 갖는다. 로직은 공개, 데이터는 로컬.
 
-CSV 양식 (data/local/거래처_계정.csv — scripts/review_unclassified.py 산출물의
-'계정' 칸을 채운 것):
+CSV 양식 (<local_dir>/거래처_계정.csv — scripts/review_unclassified.py 산출물의
+'계정' 칸을 채운 것. local_dir 은 src/paths.py 가 해석하며 저장소 폴더 밖이다):
 
     거래처,계정,원가행태,근거
     ○○철강,자재비,,강재 구매 — 현장 물량 비례
@@ -30,11 +30,20 @@ import csv
 import sqlite3
 from pathlib import Path
 
+from src import paths
 from src.classify import set_override_bulk
 from src.rules import COST_BEHAVIOR, UNCLASSIFIED, VALID_BEHAVIORS
 
-# 기본 위치. data/local/ 은 .gitignore 대상이다.
-DEFAULT_PATH = Path("data/local/거래처_계정.csv")
+FILENAME = "거래처_계정.csv"
+
+
+def default_path() -> Path:
+    """확정 판단 CSV 의 기본 위치.
+
+    함수로 두는 이유 — 모듈 로드 시점에 굳히면 paths.local.json 을 고친 뒤
+    다시 돌려도 옛 경로를 읽는다. 그러면 "채웠는데 왜 안 먹지" 가 된다.
+    """
+    return paths.local_dir() / FILENAME
 
 REQUIRED_COLUMNS = ("거래처", "계정")
 
@@ -108,9 +117,9 @@ def parse_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return parsed, skipped
 
 
-def load(path: str | Path = DEFAULT_PATH) -> tuple[list[dict], list[dict]]:
+def load(path: str | Path | None = None) -> tuple[list[dict], list[dict]]:
     """CSV 를 읽어 파싱한다. 파일이 없으면 빈 결과 (아직 안 채운 상태)."""
-    p = Path(path)
+    p = Path(path) if path is not None else default_path()
     if not p.exists():
         return [], []
 
@@ -134,7 +143,7 @@ def load(path: str | Path = DEFAULT_PATH) -> tuple[list[dict], list[dict]]:
 
 def apply(
     conn: sqlite3.Connection,
-    path: str | Path = DEFAULT_PATH,
+    path: str | Path | None = None,
     only_unclassified: bool = True,
 ) -> dict:
     """판단을 transactions 에 적용한다. 적용 내역 요약을 돌려준다.
